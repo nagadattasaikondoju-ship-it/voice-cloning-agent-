@@ -460,6 +460,13 @@
                 maxlength="5000"
                 required
               ></textarea>
+              <div class="script-import">
+                <button type="button" class="pill-btn pill-btn-ghost pill-btn-sm" id="btn-import-script">
+                  <i class="fa-solid fa-file-lines"></i> Load script or audio
+                </button>
+                <input type="file" id="script-file-input" accept=".txt,.md,.srt,.vtt,audio/*,.mp3,.m4a,.wav,.webm,.ogg" hidden />
+                <span class="input-hint" id="script-import-hint">Text files (.txt, .md, .srt, .vtt) load directly; audio is transcribed with Whisper so you can re-voice it.</span>
+              </div>
             </div>
 
             <!-- Voice Controls (Speed, Volume, Pitch) -->

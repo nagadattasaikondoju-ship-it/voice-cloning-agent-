@@ -83,6 +83,7 @@ services:
       STORAGE_DIR: /app/private_storage
       SPEECH_PIPELINE_URL: http://speech-pipeline:8000
       MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:

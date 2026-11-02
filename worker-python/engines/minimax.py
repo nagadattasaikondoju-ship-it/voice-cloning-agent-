@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from engines.errors import PermanentError
+
 from audio_utils import convert
 from settings import MINIMAX_API_KEY, MINIMAX_BASE_URL, MINIMAX_MODEL
 
@@ -21,11 +23,27 @@ def _headers(json_body: bool = False) -> Dict[str, str]:
     return h
 
 
+MINIMAX_ERRORS = {
+    1002: "MiniMax rate limit hit. Wait a minute and try again.",
+    1004: "MiniMax rejected the API key. Check MINIMAX_API_KEY and that it matches MINIMAX_BASE_URL "
+          "(international: api.minimax.io, mainland China: api.minimaxi.com).",
+    1008: "MiniMax account balance is insufficient. Top up at platform.minimax.io (voice cloning and speech are paid).",
+    1039: "MiniMax token-per-minute limit hit. Try again shortly.",
+    1042: "Text contains too many unsupported characters.",
+    1043: "MiniMax says the sample audio does not match its transcript.",
+    2013: "MiniMax rejected the request parameters (sample must be 10 s–5 min mp3/m4a/wav, under 20 MB).",
+    2038: "MiniMax account has no voice-cloning permission. Complete account verification at platform.minimax.io.",
+}
+
+
 def _check(payload: Dict[str, Any]) -> Dict[str, Any]:
     # MiniMax reports most errors with HTTP 200 and a non-zero base_resp.status_code.
     base = payload.get("base_resp") or {}
-    if base.get("status_code", 0) != 0:
-        raise RuntimeError(f"MiniMax error {base.get('status_code')}: {base.get('status_msg')}")
+    code = base.get("status_code", 0)
+    if code != 0:
+        hint = MINIMAX_ERRORS.get(code, base.get("status_msg") or "unknown error")
+        err = RuntimeError if code in (1000, 1001, 1002, 1013, 1039) else PermanentError
+        raise err(f"MiniMax {code}: {hint}")
     return payload
 
 
@@ -52,6 +70,7 @@ def upload_voice_sample(file_path: str) -> int:
 
 
 def clone(sample_path: str, voice_id: str, display_name: str) -> Dict[str, Optional[str]]:
+    # Note: MiniMax deletes a cloned voice that is not used for speech within 7 days.
     file_id = upload_voice_sample(sample_path)
     resp = requests.post(
         f"{MINIMAX_BASE_URL}/voice_clone",

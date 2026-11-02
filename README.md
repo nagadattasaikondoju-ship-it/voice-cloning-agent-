@@ -53,7 +53,8 @@ until Whisper's transcript of that recording matches the phrase.
 | `minimax` | Paid | `MINIMAX_API_KEY` | `speech-2.8-hd`. Supports speed, volume and pitch. Samples should be 10 s–5 min. |
 | `elevenlabs` | Paid plan | `ELEVENLABS_API_KEY` | Instant Voice Clone + `eleven_multilingual_v2`. Speed 0.7–1.2. |
 
-An engine whose key is missing is shown as disabled in the dashboard and rejected by the API.
+The worker checks each engine at startup and every 10 minutes (`worker-python/health.py`) and publishes the result.
+An engine that fails its check is shown as unavailable in the dashboard, with the reason, and the API rejects it.
 
 ---
 
@@ -137,6 +138,39 @@ cd speech_pipeline && pytest
 
 ---
 
+## Troubleshooting: "I added API keys but cloning still fails"
+
+Open **Settings → Voice Engines** in the dashboard. Each engine shows whether it works and, if not, why. The
+same check runs from a terminal:
+
+```bash
+docker compose exec worker-python python health.py
+```
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Engine shows "unavailable", "worker is not running" | `worker-python` isn't running, so no job ever runs | Start it; check `docker compose logs worker-python` |
+| Key set but engine "not configured" | The key is in the wrong `.env`. Docker reads only the **root** `.env` | Put keys in `./.env` and run `docker compose up -d` again |
+| MiniMax `1004` | Wrong key, or the key's region doesn't match the URL | Set `MINIMAX_BASE_URL` (`api.minimax.io` international, `api.minimaxi.com` China) |
+| MiniMax `2038` | Account not verified for cloning | Complete verification at platform.minimax.io |
+| MiniMax `1008` | No balance (cloning and speech are paid) | Top up the MiniMax account |
+| MiniMax `2013` | Sample under 10 s or over 5 min | Upload 10–60 s of clean speech |
+| MiniMax voice disappears | MiniMax deletes cloned voices unused for 7 days | Generate speech with it soon after cloning |
+| ElevenLabs "plan does not include Instant Voice Cloning" | Free plan | Starter plan or above |
+| ElevenLabs "missing permissions" | Restricted API key | New key with Voices (write), Text to Speech, User (read) |
+| F5 "GPU quota is used up" | Anonymous ZeroGPU limit on the public Space | Set `HF_TOKEN` (free); Hugging Face Pro raises the quota; or use a paid engine |
+| Consent "speech recognition unavailable" | `speech-pipeline` is down or still downloading Whisper | Check `docker compose logs speech-pipeline` |
+| Dashboard says "Cannot reach the API" | Opened as `file://`, or from an origin not in `ALLOWED_ORIGINS` | Open http://localhost:5500 |
+| Microphone does not work | Browsers allow the mic only on `localhost` or HTTPS | Use localhost, or HTTPS when deployed |
+
+## Scripts from files or audio
+
+In **Text to Speech**, **Load script or audio** fills the script box from `.txt`, `.md`, `.srt` or `.vtt`.
+Audio (mp3, m4a, wav, webm, ogg) is transcribed with Whisper (`POST /api/transcribe`), so an existing recording can
+be re-spoken in a cloned voice.
+
+---
+
 ## API
 
 | Method | Path | Notes |
@@ -156,6 +190,7 @@ cd speech_pipeline && pytest
 | GET | `/api/speech/jobs/:id` · `/api/speech/history` | |
 | DELETE | `/api/speech/audio/:id` | Deletes the row and the file |
 | GET | `/api/audio/:id` | Owner-only MP3 stream |
+| POST | `/api/transcribe` | multipart `audio` → `{transcript}` (script from audio; not stored) |
 
 ---
 

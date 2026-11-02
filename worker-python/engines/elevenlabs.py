@@ -5,6 +5,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from engines.errors import PermanentError
+
 from settings import ELEVENLABS_API_KEY, ELEVENLABS_BASE_URL, ELEVENLABS_MODEL
 
 logger = logging.getLogger(__name__)
@@ -16,14 +18,31 @@ def _headers() -> Dict[str, str]:
     return {"xi-api-key": ELEVENLABS_API_KEY}
 
 
+ELEVENLABS_HINTS = {
+    "missing_permissions": "API key lacks permissions (needs Voices write, Text to Speech, User read).",
+    "can_not_use_instant_voice_cloning": "Your ElevenLabs plan does not include Instant Voice Cloning. Upgrade to Starter or above.",
+    "voice_limit_reached": "ElevenLabs custom-voice limit reached for your plan. Delete old voices or upgrade.",
+    "quota_exceeded": "ElevenLabs credits are used up for this billing period.",
+    "invalid_api_key": "ElevenLabs rejected the API key.",
+    "detected_unusual_activity": "ElevenLabs blocked free-tier use from this network. A paid plan is required.",
+}
+
+
 def _raise_for(resp: requests.Response) -> None:
-    if resp.status_code >= 400:
-        try:
-            detail = resp.json().get("detail")
-            msg = detail.get("message") if isinstance(detail, dict) else detail
-        except Exception:
-            msg = resp.text[:300]
-        raise RuntimeError(f"ElevenLabs error {resp.status_code}: {msg}")
+    if resp.status_code < 400:
+        return
+    status, msg = "", resp.text[:300]
+    try:
+        detail = resp.json().get("detail")
+        if isinstance(detail, dict):
+            status, msg = detail.get("status", ""), detail.get("message", msg)
+        elif detail:
+            msg = str(detail)
+    except Exception:
+        pass
+    hint = ELEVENLABS_HINTS.get(status) or next((h for k, h in ELEVENLABS_HINTS.items() if k in msg), msg)
+    err = RuntimeError if resp.status_code in (429, 500, 502, 503, 504) else PermanentError
+    raise err(f"ElevenLabs {resp.status_code}: {hint}")
 
 
 def clone(sample_path: str, voice_id: str, display_name: str) -> Dict[str, Optional[str]]:

@@ -1773,3 +1773,6 @@ body.dashboard-body {
 .voice-error { font-size: 12px; color: #f87171; margin-top: 6px; }
 .engine-tag { font-size: 11px; color: #a5b4fc; margin-left: 6px; }
 .text-danger { color: #f87171; }
+.script-import { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+.script-import .input-hint { font-size: 12px; color: #94a3b8; }
+.engine-status-item .engine-problem { color: #f87171; }

@@ -12,7 +12,7 @@ use crate::{
     models::{
         CloneWorkerJob, CreateVoiceCloneRequest, DeleteVoiceWorkerJob, VoiceClone, VoiceSample, CLONE_COLUMNS,
     },
-    routes::read_audio_upload,
+    routes::{meta_routes::engine_status, read_audio_upload},
     storage,
 };
 
@@ -73,8 +73,10 @@ pub async fn create_voice_clone(
         return Err(ApiError::bad_request("Voice name must be 1–80 characters"));
     }
     let engine = body.engine.unwrap_or_else(|| "f5".to_string()).to_lowercase();
-    if !state.config.engine_enabled(&engine) {
-        return Err(ApiError::bad_request(format!("Voice engine '{engine}' is not available on this server")));
+    let status = engine_status(&state, &engine).await;
+    if !status.available {
+        let why = status.problem.unwrap_or_else(|| "not available".into());
+        return Err(ApiError::bad_request(format!("Voice engine '{engine}' cannot be used: {why}")));
     }
 
     // 1. Consent must belong to this user and have passed speech verification.
@@ -98,6 +100,10 @@ pub async fn create_voice_clone(
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| ApiError::not_found("Voice sample not found"))?;
+
+    if engine == "minimax" && sample.duration_seconds > 0.0 && sample.duration_seconds < 10.0 {
+        return Err(ApiError::bad_request("MiniMax needs a sample of at least 10 seconds"));
+    }
 
     // MiniMax voice ids: 8–256 chars, start with a letter, letters/digits/_ only.
     let voice_id = format!("voice_{}", &Uuid::new_v4().simple().to_string()[..20]);

@@ -6,6 +6,7 @@ mod error;
 mod models;
 mod routes;
 mod storage;
+mod stt;
 
 use std::{net::SocketAddr, time::Duration};
 
@@ -21,7 +22,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::{
     config::Config,
     db::{init_db, AppState},
-    routes::{auth_routes, clone_routes, consent_routes, meta_routes, speech_routes, MAX_AUDIO_BYTES},
+    routes::{
+        auth_routes, clone_routes, consent_routes, meta_routes, speech_routes, transcribe_routes, MAX_AUDIO_BYTES,
+    },
 };
 
 #[tokio::main]
@@ -45,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
 
     let db = init_db(&config.database_url).await?;
     let redis = redis::Client::open(config.redis_url.clone())?;
-    let http = reqwest::Client::builder().timeout(Duration::from_secs(180)).build()?;
+    let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(180)).build()?;
     tokio::fs::create_dir_all(&config.storage_dir).await?;
 
     let origins: Vec<HeaderValue> = config.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
@@ -86,6 +89,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/speech/history", get(speech_routes::get_speech_history))
         .route("/api/speech/audio/:id", delete(speech_routes::delete_generated_audio))
         .route("/api/audio/:id", get(speech_routes::stream_audio))
+        // Audio -> script text for TTS
+        .route("/api/transcribe", post(transcribe_routes::transcribe_audio))
         .layer(DefaultBodyLimit::max(MAX_AUDIO_BYTES + 1024 * 1024))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

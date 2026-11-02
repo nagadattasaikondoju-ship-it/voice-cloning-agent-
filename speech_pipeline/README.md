@@ -144,7 +144,7 @@ curl -X POST http://localhost:8000/api/v1/transcribe -F "file=@clip.webm"
 # {"transcript": "...", "language": "en", "duration_seconds": 8.6, "engine": {...}}
 ```
 
-Clips of 45 s or less are transcribed in a single Whisper pass with Whisper's built-in VAD. Longer clips go through
+Clips up to 30 minutes are transcribed in a single Whisper pass with Whisper's built-in VAD. Longer clips go through
 the chunked pipeline. Nothing is retained: the clip and its records are deleted before the response returns.
 
 ### Ingest Audio (Upload File)

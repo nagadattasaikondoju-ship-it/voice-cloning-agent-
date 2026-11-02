@@ -291,7 +291,11 @@ async function loadEngines() {
 
   document.getElementById("engine-banner-badge").textContent = available.length
     ? `Engines: ${available.map((e) => e.name.split(" (")[0]).join(" · ")}`
-    : "No engines configured";
+    : "No voice engine is usable";
+  if (!available.length && STATE.engines[0]) {
+    document.getElementById("engine-banner-desc").textContent =
+      "Cloning will not work until an engine is fixed: " + STATE.engines.map((e) => `${e.name.split(" (")[0]}: ${e.problem}`).join(" | ");
+  }
   document.getElementById("metric-model-name").textContent = available.length ? String(available.length) : "0";
 
   const select = document.getElementById("clone-engine-select");
@@ -299,7 +303,7 @@ async function loadEngines() {
   STATE.engines.forEach((e) => {
     const opt = document.createElement("option");
     opt.value = e.id;
-    opt.textContent = e.available ? e.name : `${e.name} (not configured)`;
+    opt.textContent = e.available ? e.name : `${e.name} (unavailable)`;
     opt.disabled = !e.available;
     select.appendChild(opt);
   });
@@ -310,8 +314,10 @@ async function loadEngines() {
     .map(
       (e) => `
       <div class="engine-status-item">
-        <div><strong>${escapeHtml(e.name)}</strong><p>${escapeHtml(e.description)}</p></div>
-        <span class="status-badge ${e.available ? "ready" : "failed"}">${e.available ? "available" : "not configured"}</span>
+        <div><strong>${escapeHtml(e.name)}</strong><p>${escapeHtml(e.description)}</p>
+          ${e.problem ? `<p class="engine-problem"><i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(e.problem)}</p>` : ""}
+          ${e.detail ? `<p>${escapeHtml(e.detail)}</p>` : ""}</div>
+        <span class="status-badge ${e.available ? "ready" : "failed"}">${e.available ? "available" : "unavailable"}</span>
       </div>`
     )
     .join("");
@@ -328,7 +334,8 @@ async function loadHealth() {
       row("Rust API (Axum)", true, "Online") +
       row("PostgreSQL", h.database) +
       row("Redis job queue", h.redis) +
-      row("Whisper speech pipeline", h.speech_pipeline, "Online", "Offline (consent checks will fail)");
+      row("Whisper speech pipeline", h.speech_pipeline, "Online", "Offline (consent checks will fail)") +
+      row("Voice worker", h.worker, "Running", "Not running (clone and speech jobs will stay queued)");
   } catch {
     list.innerHTML = row("Rust API (Axum)", false, "Online", `Offline (${API_BASE_URL})`);
   }
@@ -339,7 +346,7 @@ function updateEngineSummary() {
   const engine = STATE.engines.find((e) => e.id === id);
   document.getElementById("summary-engine-name").textContent = engine ? engine.name : "—";
   document.getElementById("step3-engine-badge").textContent = engine ? `Engine: ${engine.name.split(" (")[0]}` : "Choose an engine";
-  document.getElementById("clone-engine-hint").textContent = engine ? engine.description : "";
+  document.getElementById("clone-engine-hint").textContent = engine ? [engine.description, engine.detail].filter(Boolean).join(" ") : "";
 }
 
 /* ==========================================================================
@@ -785,6 +792,13 @@ function initTTSStudio() {
     document.getElementById("val-pitch").textContent = e.target.value;
   });
   document.getElementById("tts-voice-select").addEventListener("change", updateControlHints);
+  const scriptInput = document.getElementById("script-file-input");
+  document.getElementById("btn-import-script").addEventListener("click", () => scriptInput.click());
+  scriptInput.addEventListener("change", (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (file) importScript(file);
+  });
   document.getElementById("form-generate-speech").addEventListener("submit", handleTTSGenerate);
 
   const audio = document.getElementById("tts-audio-element");
@@ -795,6 +809,46 @@ function initTTSStudio() {
 
   document.getElementById("btn-refresh-history").addEventListener("click", fetchSpeechHistory);
   document.getElementById("btn-refresh-voices").addEventListener("click", fetchClonedVoices);
+}
+
+/** Fill the script box from a text/subtitle file, or from audio via Whisper. */
+async function importScript(file) {
+  const input = document.getElementById("tts-text-input");
+  const hint = document.getElementById("script-import-hint");
+  const btn = document.getElementById("btn-import-script");
+  const isAudio = (file.type || "").startsWith("audio/") || /\.(mp3|m4a|wav|webm|ogg)$/i.test(file.name);
+  let text;
+  try {
+    if (isAudio) {
+      if (file.size > MAX_UPLOAD_BYTES) throw new Error("Audio exceeds the 20 MB limit.");
+      setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Transcribing…');
+      const form = new FormData();
+      form.append("audio", file, file.name);
+      text = (await api("/api/transcribe", { method: "POST", form })).transcript;
+      if (!text) throw new Error("No speech was detected in that audio.");
+    } else {
+      text = await file.text();
+      if (/\.(srt|vtt)$/i.test(file.name)) {
+        text = text
+          .split(/\r?\n/)
+          .filter((l) => l.trim() && !/^\d+$/.test(l.trim()) && !/-->/.test(l) && !/^WEBVTT/.test(l))
+          .join(" ");
+      }
+    }
+    text = text.replace(/\s+\n/g, "\n").trim();
+    if (text.length > 5000) {
+      showToast(`Script is ${text.length} characters; only the first 5000 were loaded.`, "info");
+      text = text.slice(0, 5000);
+    }
+    input.value = text;
+    document.getElementById("tts-char-counter").textContent = `${text.length} / 5000`;
+    hint.textContent = `Loaded from ${file.name}. Edit it before generating if needed.`;
+    showToast("Script loaded", "success");
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    setButtonBusy(btn, false);
+  }
 }
 
 /** Not every engine honours every slider; say so instead of silently ignoring it. */

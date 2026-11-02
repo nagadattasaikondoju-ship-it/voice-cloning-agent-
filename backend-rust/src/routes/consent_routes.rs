@@ -14,7 +14,7 @@ use crate::{
     error::{ApiError, ApiResult},
     models::{Consent, ConsentVerification, CONSENT_COLUMNS},
     routes::read_audio_upload,
-    storage,
+    storage, stt,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -48,10 +48,6 @@ pub async fn create_consent(
     Ok(Json(consent))
 }
 
-#[derive(Debug, Deserialize)]
-struct TranscribeResponse {
-    transcript: String,
-}
 
 /// Step 2: the user uploads a recording of the phrase. The speech_pipeline (Whisper)
 /// transcribes it and the consent is verified only if the transcript matches the phrase.
@@ -92,37 +88,9 @@ pub async fn verify_consent(
     let (ext, mime) = storage::audio_mime_for(upload.file_name.as_deref(), upload.content_type.as_deref())
         .ok_or_else(|| ApiError::bad_request("Unsupported audio format (use webm, wav, mp3, m4a or ogg)"))?;
 
-    // Transcribe with the speech pipeline before counting the attempt.
-    let part = reqwest::multipart::Part::bytes(upload.bytes.clone())
-        .file_name(format!("consent.{ext}"))
-        .mime_str(mime)
-        .map_err(|e| ApiError::internal("Invalid MIME type", e))?;
-    let form = reqwest::multipart::Form::new().part("file", part);
-    let response = state
-        .http
-        .post(format!("{}/api/v1/transcribe", state.config.speech_pipeline_url))
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!("Speech pipeline unreachable: {e:?}");
-            ApiError::unavailable("Speech recognition service is unavailable. Try again shortly.")
-        })?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        tracing::error!("Speech pipeline error {status}: {body}");
-        return Err(if status.is_client_error() {
-            ApiError::bad_request("Could not decode the consent recording. Please record again.")
-        } else {
-            ApiError::unavailable("Speech recognition failed. Try again shortly.")
-        });
-    }
-    let transcript = response
-        .json::<TranscribeResponse>()
-        .await
-        .map_err(|e| ApiError::internal("Bad speech pipeline response", e))?
-        .transcript;
+    // Transcribe before counting the attempt, so an outage does not burn attempts.
+    let transcript =
+        stt::transcribe(&state, upload.bytes.clone(), ext, mime, std::time::Duration::from_secs(120)).await?;
 
     let attempt = consent.attempts + 1;
     let key = format!("consents/{}_{}.{}", consent.id, attempt, ext);

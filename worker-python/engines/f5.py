@@ -12,6 +12,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from engines.errors import PermanentError
+
 from audio_utils import convert
 from settings import F5_REFERENCE_SECONDS, F5_SPACE, HF_TOKEN, SPEECH_PIPELINE_URL, STORAGE_DIR
 
@@ -59,13 +61,22 @@ def synthesize(job: Dict[str, Any], clone_row: Dict[str, Any]) -> bytes:
     ref_text = clone_row.get("reference_text") or ""
     if not ref_key:
         raise RuntimeError("Voice has no F5 reference clip; re-create the voice.")
-    result = _get_client().predict(
-        handle_file(str(STORAGE_DIR / ref_key)),
-        ref_text,
-        job["text"],
-        True,  # remove_silence
-        api_name="/predict",
-    )
+    try:
+        result = _get_client().predict(
+            handle_file(str(STORAGE_DIR / ref_key)),
+            ref_text,
+            job["text"],
+            True,  # remove_silence
+            api_name="/predict",
+        )
+    except Exception as e:
+        msg = str(e)
+        if "ZeroGPU" in msg or "quota" in msg.lower():
+            raise PermanentError(
+                "Free F5-TTS GPU quota is used up. Set HF_TOKEN (free at huggingface.co/settings/tokens; "
+                "a Pro account gets much more quota) or use MiniMax/ElevenLabs."
+            ) from e
+        raise
     out_path = result if isinstance(result, str) else (result or {}).get("path")
     if not out_path or not Path(out_path).exists():
         raise RuntimeError("F5-TTS Space returned no audio")

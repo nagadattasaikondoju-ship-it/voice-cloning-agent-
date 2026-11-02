@@ -6,6 +6,9 @@ from redis import Redis
 
 from settings import REDIS_URL
 from jobs import process_voice_clone_job, process_speech_job, delete_voice_job
+import health
+
+HEALTH_INTERVAL_S = 600
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,9 +30,17 @@ def run_worker_loop():
         logger.error(f"Could not connect to Redis: {e}. Worker will retry...")
 
     queues = ["voice_clone_jobs", "speech_jobs", "delete_voice_jobs"]
+    last_health = 0.0
 
     while True:
         try:
+            if time.time() - last_health > HEALTH_INTERVAL_S:
+                last_health = time.time()
+                try:
+                    health.publish(r)
+                except Exception as e:
+                    logger.warning(f"Engine health check failed: {e}")
+
             # BRPOP blocks until an item is available in one of the queues
             item = r.brpop(queues, timeout=2)
             if not item:

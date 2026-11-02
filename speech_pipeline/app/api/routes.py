@@ -269,7 +269,8 @@ async def remove_recording(recording_id: str):
     }
 
 
-SHORT_CLIP_SECONDS = 45.0
+# Single Whisper pass (with its own VAD) up to this length; the chunked pipeline beyond it.
+SHORT_CLIP_SECONDS = 1800.0
 
 
 def _transcribe_whole_clip(wav_path: str, language: Optional[str]) -> tuple:

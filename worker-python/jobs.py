@@ -21,6 +21,7 @@ from psycopg2.extras import RealDictCursor
 
 from audio_utils import duration_seconds, to_mp3_bytes
 from engines import get_engine
+from engines.errors import PermanentError
 from settings import DATABASE_URL
 from storage import get_local_file_path, save_generated_audio
 
@@ -54,7 +55,7 @@ def _with_retries(label: str, fn: Callable[[], Any]) -> Any:
         except Exception as e:  # noqa: BLE001 - surfaced to the user after retries
             last = e
             logger.warning(f"[{label}] attempt {attempt}/{MAX_ATTEMPTS} failed: {e}")
-            if attempt < MAX_ATTEMPTS and not isinstance(e, (ValueError, FileNotFoundError)):
+            if attempt < MAX_ATTEMPTS and not isinstance(e, (ValueError, FileNotFoundError, PermanentError)):
                 time.sleep(2 ** attempt)
             else:
                 break
