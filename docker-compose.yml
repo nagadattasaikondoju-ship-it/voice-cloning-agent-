@@ -83,7 +83,6 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/voiceclone
       REDIS_URL: redis://redis:6379/0
       STORAGE_DIR: /app/private_storage
-      CHATTERBOX_MODEL: ${CHATTERBOX_MODEL:-turbo}
       CHATTERBOX_DEVICE: ${CHATTERBOX_DEVICE:-auto}
     volumes:
       - private_storage:/app/private_storage

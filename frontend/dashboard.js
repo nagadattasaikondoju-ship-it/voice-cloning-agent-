@@ -273,20 +273,13 @@ function onSignedIn(token, user) {
 /* ==========================================================================
    Engines & health
    ========================================================================== */
-const LANGUAGE_NAMES = {
-  ar: "Arabic", da: "Danish", de: "German", el: "Greek", en: "English", es: "Spanish", fi: "Finnish",
-  fr: "French", he: "Hebrew", hi: "Hindi", it: "Italian", ja: "Japanese", ko: "Korean", ms: "Malay",
-  nl: "Dutch", no: "Norwegian", pl: "Polish", pt: "Portuguese", ru: "Russian", sv: "Swedish",
-  sw: "Swahili", tr: "Turkish", zh: "Chinese",
-};
-
 /** Engine status from the worker heartbeat; polled while the model is loading. */
 async function loadEngine() {
   let e;
   try {
     e = await api("/api/engine");
   } catch (err) {
-    e = { ok: false, status: "offline", problem: err.message, languages: [] };
+    e = { ok: false, status: "offline", problem: err.message };
   }
   STATE.engine = e;
   const label = e.model_label ? `Chatterbox · ${e.model_label}` : "Chatterbox";
@@ -302,19 +295,11 @@ async function loadEngine() {
   document.getElementById("engine-status-list").innerHTML = `
     <div class="engine-status-item">
       <div><strong>${escapeHtml(label)}</strong>
-        <p>Device: ${escapeHtml(where || "—")} · Languages: ${escapeHtml((e.languages || []).map((l) => LANGUAGE_NAMES[l] || l).join(", ") || "—")}</p>
+        <p>Device: ${escapeHtml(where || "—")} · English</p>
         ${e.problem ? `<p class="engine-problem"><i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(e.problem)}</p>` : ""}
       </div>
       <span class="status-badge ${e.ok ? "ready" : e.status === "loading" ? "processing" : "failed"}">${escapeHtml(statusText)}</span>
     </div>`;
-
-  const langs = e.languages || [];
-  const group = document.getElementById("tts-language-group");
-  const select = document.getElementById("tts-language-select");
-  group.style.display = langs.length > 1 ? "" : "none"; // .form-group CSS overrides [hidden]
-  const current = select.value;
-  select.innerHTML = langs.map((l) => `<option value="${l}">${escapeHtml(LANGUAGE_NAMES[l] || l)}</option>`).join("");
-  select.value = langs.includes(current) ? current : langs.includes("en") ? "en" : langs[0] || "";
 
   if (e.status === "loading") setTimeout(loadEngine, 5000);
 }
@@ -848,7 +833,6 @@ async function handleTTSGenerate(e) {
         text,
         speed: parseFloat(document.getElementById("slider-speed").value),
         volume: parseFloat(document.getElementById("slider-volume").value),
-        language: document.getElementById("tts-language-select").value || "en",
       },
     });
 
@@ -945,7 +929,7 @@ function renderSpeechHistory() {
       <div class="history-details">
         <div class="history-text">"${escapeHtml(item.text)}"</div>
         <div class="history-meta">
-          <span><i class="fa-solid fa-microphone"></i> ${escapeHtml(item.voice_name)} · ${escapeHtml(LANGUAGE_NAMES[item.language] || item.language)}</span>
+          <span><i class="fa-solid fa-microphone"></i> ${escapeHtml(item.voice_name)}</span>
           <span><i class="fa-regular fa-clock"></i> ${new Date(item.created_at).toLocaleString()}</span>
           ${item.duration_seconds ? `<span>${Number(item.duration_seconds).toFixed(1)}s</span>` : ""}
         </div>

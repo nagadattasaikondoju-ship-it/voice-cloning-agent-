@@ -62,7 +62,7 @@ def process_voice_clone_job(job: Dict[str, Any]) -> None:
 
 def process_speech_job(job: Dict[str, Any]) -> None:
     job_id = job["job_id"]
-    logger.info(f"[speech {job_id}] {len(job['text'])} chars, lang={job.get('language', 'en')}")
+    logger.info(f"[speech {job_id}] {len(job['text'])} chars")
     _execute("UPDATE speech_jobs SET status = 'processing' WHERE id = %s", (job_id,))
     try:
         clone = _fetch_one(
@@ -75,7 +75,7 @@ def process_speech_job(job: Dict[str, Any]) -> None:
         out_key = f"generated/{job_id}.mp3"
         with tempfile.TemporaryDirectory() as tmp:
             raw = Path(tmp) / "raw.wav"
-            tts.synthesize(path_for(clone["reference_audio_key"]), job["text"], job.get("language", "en"), raw)
+            tts.synthesize(path_for(clone["reference_audio_key"]), job["text"], raw)
             duration = finalize(raw, path_for(out_key), float(job.get("speed", 1.0)), float(job.get("volume", 1.0)))
         size = path_for(out_key).stat().st_size
 

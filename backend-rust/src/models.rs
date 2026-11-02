@@ -132,8 +132,6 @@ pub struct GenerateSpeechRequest {
     pub text: String,
     pub speed: Option<f64>,
     pub volume: Option<f64>,
-    /// ISO 639-1 code; only "en" unless the worker runs the multilingual model.
-    pub language: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -157,7 +155,6 @@ pub struct SpeechHistoryItem {
     pub speech_job_id: Uuid,
     pub voice_clone_id: Uuid,
     pub voice_name: String,
-    pub language: String,
     pub text: String,
     pub duration_seconds: Option<f64>,
     pub created_at: DateTime<Utc>,
@@ -183,7 +180,6 @@ pub struct SpeechWorkerJob {
     pub text: String,
     pub speed: f64,
     pub volume: f64,
-    pub language: String,
 }
 
 #[derive(Debug, Serialize)]

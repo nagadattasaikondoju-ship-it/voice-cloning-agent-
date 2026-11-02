@@ -4,7 +4,7 @@ Consent-verified voice cloning and text-to-speech that runs entirely on your own
 no usage limits. A user can only clone their **own** voice. The server issues a random phrase, the user reads it
 aloud, and the API refuses to create a clone until Whisper's transcript of that recording matches the phrase.
 
-- **Voice engine:** [Chatterbox](https://github.com/resemble-ai/chatterbox) by Resemble AI (MIT license, commercial use allowed). Zero-shot cloning from 6–30 s of speech. Every clip carries an inaudible AI watermark.
+- **Voice engine:** [Chatterbox Turbo](https://github.com/resemble-ai/chatterbox) by Resemble AI (MIT license, commercial use allowed). English. Zero-shot cloning from 6–30 s of speech. Every clip carries an inaudible AI watermark.
 - **Rust (Axum) API:** auth, consent, uploads, ownership checks, audit log
 - **Python worker:** runs the Chatterbox model on GPU or CPU and processes jobs from Redis
 - **Whisper speech pipeline** (faster-whisper): verifies spoken consent, turns audio into script text
@@ -43,14 +43,10 @@ text and voice always produce the same audio, and all clips have the same format
 3. `POST /api/voice-samples` stores 6 s–5 min of speech. `POST /api/voice-clones` (requires your verified consent) queues the clone.
 4. `POST /api/speech/generate` queues speech; the dashboard polls `/api/speech/jobs/:id` and plays the owner-only MP3.
 
-### Models
+### Model
 
-| `CHATTERBOX_MODEL` | Languages | Size | Notes |
-|---|---|---|---|
-| `turbo` (default) | English | 350M | Fastest; fits a 4 GB GPU |
-| `multilingual` | 23, incl. Hindi (not Telugu) | 500M | Slower; needs more GPU memory, otherwise falls back to CPU |
-
-Speed (0.5–2×, pitch preserved) and volume work with both models. Pitch control is not offered.
+Chatterbox Turbo: English, 350M parameters, fits a 4 GB GPU, and falls back to CPU if the GPU runs out of memory.
+Controls: speed (0.5–2×, pitch preserved) and volume.
 
 ---
 
@@ -156,7 +152,7 @@ cd worker-python && python health.py
 |---|---|---|
 | "Voice worker: not running" | `worker-python` is not running | `docker compose logs worker-python` |
 | "Loading model…" for a long time | First start is downloading the model | Wait; check the worker log for download progress |
-| Worker log: GPU out of memory, falling back to CPU | 4 GB GPU with the multilingual model or long text | Use `CHATTERBOX_MODEL=turbo`, or accept CPU speed |
+| Worker log: GPU out of memory, falling back to CPU | Another program is using GPU memory | Close GPU-heavy apps and restart the worker |
 | Generation is slow | Running on CPU | Use the GPU compose file; check the dashboard shows "on GPU" |
 | "Only X s of speech was found" | Sample is mostly silence or too short | Record 10–30 s of clear speech |
 | Consent "speech recognition unavailable" | `speech-pipeline` is down or downloading Whisper | `docker compose logs speech-pipeline` |
@@ -175,7 +171,7 @@ Audio (mp3, m4a, wav, webm, ogg) is transcribed with Whisper, so an existing rec
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/health` | DB, Redis, Whisper and worker status |
-| GET | `/api/engine` | `{status: loading/ready/error/offline, model, device, languages, problem}` |
+| GET | `/api/engine` | `{status: loading/ready/error/offline, model, device, problem}` |
 | POST | `/api/auth/register` · `/api/auth/login` | `{email, password}` → `{token, user}` (JWT, 24 h) |
 | POST | `/api/auth/logout` · GET `/api/auth/me` | |
 | POST | `/api/consents` | Issues a consent phrase |
@@ -185,7 +181,7 @@ Audio (mp3, m4a, wav, webm, ogg) is transcribed with Whisper, so an existing rec
 | POST | `/api/voice-clones` | `{consent_id, sample_id, display_name}` |
 | GET | `/api/voice-clones` · `/api/voice-clones/:id` | |
 | DELETE | `/api/voice-clones/:id` | Deletes the voice and its reference clip |
-| POST | `/api/speech/generate` | `{voice_clone_id, text, speed?, volume?, language?}` → job |
+| POST | `/api/speech/generate` | `{voice_clone_id, text, speed?, volume?}` → job |
 | GET | `/api/speech/jobs/:id` · `/api/speech/history` | |
 | DELETE | `/api/speech/audio/:id` | Deletes the row and the file |
 | GET | `/api/audio/:id` | Owner-only MP3 stream |

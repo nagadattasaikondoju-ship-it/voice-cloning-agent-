@@ -45,15 +45,7 @@ pub async fn generate_speech(
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| ApiError::not_found("Voice clone not found"))?;
-    let engine = require_engine(&state).await?;
-    let language = body.language.as_deref().unwrap_or("en").trim().to_lowercase();
-    if !engine.languages.iter().any(|l| *l == language) {
-        return Err(ApiError::bad_request(format!(
-            "Language '{language}' is not available with the '{}' model (available: {})",
-            engine.model,
-            engine.languages.join(", ")
-        )));
-    }
+    require_engine(&state).await?;
     if clone.status != "ready" {
         return Err(ApiError::bad_request(format!("Voice is not ready yet (status: {})", clone.status)));
     }
@@ -62,8 +54,8 @@ pub async fn generate_speech(
     let volume = body.volume.unwrap_or(1.0).clamp(0.1, 2.0);
 
     let job: SpeechJob = sqlx::query_as(
-        "INSERT INTO speech_jobs (id, user_id, voice_clone_id, text, speed, volume, language, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued') RETURNING id, status, error_message",
+        "INSERT INTO speech_jobs (id, user_id, voice_clone_id, text, speed, volume, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'queued') RETURNING id, status, error_message",
     )
     .bind(Uuid::new_v4())
     .bind(auth.user_id)
@@ -71,7 +63,6 @@ pub async fn generate_speech(
     .bind(text)
     .bind(speed)
     .bind(volume)
-    .bind(&language)
     .fetch_one(&state.db)
     .await?;
 
@@ -82,7 +73,6 @@ pub async fn generate_speech(
         text: text.to_string(),
         speed,
         volume,
-        language: language.clone(),
     };
     if let Err(e) = enqueue(&state.redis, "speech_jobs", &worker_job).await {
         sqlx::query("UPDATE speech_jobs SET status = 'failed', error_message = 'Queue unavailable' WHERE id = $1")
@@ -97,7 +87,7 @@ pub async fn generate_speech(
         &state.db,
         Some(auth.user_id),
         "speech_generation_queued",
-        json!({ "job_id": job.id, "language": language, "chars": text.chars().count() }),
+        json!({ "job_id": job.id, "chars": text.chars().count() }),
     )
     .await;
 
@@ -133,7 +123,7 @@ pub async fn get_speech_job_status(
 pub async fn get_speech_history(auth: AuthUser, State(state): State<AppState>) -> ApiResult<Vec<SpeechHistoryItem>> {
     let mut rows: Vec<SpeechHistoryItem> = sqlx::query_as(
         "SELECT ga.id, ga.speech_job_id, vc.id AS voice_clone_id, vc.display_name AS voice_name,
-                sj.language, sj.text, ga.duration_seconds, ga.created_at
+                sj.text, ga.duration_seconds, ga.created_at
          FROM generated_audio ga
          JOIN speech_jobs sj ON ga.speech_job_id = sj.id
          JOIN voice_clones vc ON sj.voice_clone_id = vc.id

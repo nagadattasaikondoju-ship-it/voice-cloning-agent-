@@ -1,5 +1,5 @@
 """
-Chatterbox voice cloning engine (Resemble AI, MIT license). Runs locally on GPU or CPU.
+Chatterbox Turbo voice cloning engine (Resemble AI, MIT license). English only. Runs locally on GPU or CPU.
 
 One model instance per worker process. For each job the voice is conditioned once from
 the reference clip, the text is split into sentence-sized chunks, and the chunks are
@@ -11,28 +11,18 @@ import threading
 from pathlib import Path
 from typing import List, Optional
 
-from settings import CHATTERBOX_DEVICE, CHATTERBOX_MODEL, CHATTERBOX_SEED
+from settings import CHATTERBOX_DEVICE, CHATTERBOX_SEED
 
 logger = logging.getLogger(__name__)
 
-MODELS = {
-    "turbo": "English (fast, 350M)",
-    "multilingual": "23 languages (500M)",
-}
-MULTILINGUAL_LANGUAGES = [
-    "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it", "ja",
-    "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh",
-]
+MODEL = "turbo"
+MODEL_LABEL = "English (Turbo, 350M)"
 MAX_CHUNK_CHARS = 250
 PAUSE_SECONDS = 0.25
 
 _lock = threading.Lock()
 _model = None
 _device = None
-
-
-def languages() -> List[str]:
-    return MULTILINGUAL_LANGUAGES if CHATTERBOX_MODEL == "multilingual" else ["en"]
 
 
 def device() -> Optional[str]:
@@ -48,10 +38,6 @@ def _pick_device() -> str:
 
 
 def _load(on: str):
-    if CHATTERBOX_MODEL == "multilingual":
-        from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-
-        return ChatterboxMultilingualTTS.from_pretrained(device=on)
     from chatterbox.tts_turbo import ChatterboxTurboTTS
 
     return ChatterboxTurboTTS.from_pretrained(device=on)
@@ -60,13 +46,11 @@ def _load(on: str):
 def load() -> None:
     """Load (and on first run download) the model. Falls back to CPU if the GPU runs out of memory."""
     global _model, _device
-    if CHATTERBOX_MODEL not in MODELS:
-        raise ValueError(f"CHATTERBOX_MODEL must be one of {list(MODELS)}, got {CHATTERBOX_MODEL!r}")
     with _lock:
         if _model is not None:
             return
         target = _pick_device()
-        logger.info(f"Loading Chatterbox '{CHATTERBOX_MODEL}' on {target} (first run downloads ~1-2 GB)...")
+        logger.info(f"Loading Chatterbox Turbo on {target} (first run downloads ~1-2 GB)...")
         try:
             _model, _device = _load(target), target
         except Exception as e:
@@ -102,14 +86,12 @@ def split_text(text: str, limit: int = MAX_CHUNK_CHARS) -> List[str]:
     return chunks
 
 
-def synthesize(reference_wav: Path, text: str, language: str, out_wav: Path) -> None:
+def synthesize(reference_wav: Path, text: str, out_wav: Path) -> None:
     """Speak `text` in the voice of `reference_wav`; writes a mono WAV at the model's sample rate."""
     import torch
     import torchaudio
 
     load()
-    if language not in languages():
-        raise ValueError(f"Language '{language}' is not supported by the '{CHATTERBOX_MODEL}' model.")
     chunks = split_text(text)
     if not chunks:
         raise ValueError("Text is empty.")
@@ -120,10 +102,7 @@ def synthesize(reference_wav: Path, text: str, language: str, out_wav: Path) -> 
         pause = torch.zeros(1, int(_model.sr * PAUSE_SECONDS))
         parts = []
         for i, chunk in enumerate(chunks):
-            if CHATTERBOX_MODEL == "multilingual":
-                wav = _model.generate(chunk, language_id=language)
-            else:
-                wav = _model.generate(chunk)
+            wav = _model.generate(chunk)
             parts.append(wav.cpu())
             if i < len(chunks) - 1:
                 parts.append(pause)

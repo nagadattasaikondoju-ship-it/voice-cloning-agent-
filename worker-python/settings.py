@@ -11,10 +11,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localho
 # Private storage shared with the Rust API (same directory / Docker volume).
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "../backend-rust/private_storage")).resolve()
 
-# Chatterbox (Resemble AI, MIT license), runs locally.
-#   turbo         English, 350M params, fastest, fits 4 GB GPUs
-#   multilingual  23 languages (incl. Hindi), 500M params, slower
-CHATTERBOX_MODEL = os.getenv("CHATTERBOX_MODEL", "turbo").strip().lower()
+# Chatterbox Turbo (Resemble AI, MIT license): English, 350M params, fits 4 GB GPUs. Runs locally.
 # auto = CUDA if available, else CPU. Set "cpu" to force CPU.
 CHATTERBOX_DEVICE = os.getenv("CHATTERBOX_DEVICE", "auto").strip().lower()
 # Fixed seed so the same text + voice gives the same audio every time.

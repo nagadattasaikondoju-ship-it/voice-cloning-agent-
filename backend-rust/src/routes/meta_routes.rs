@@ -18,8 +18,6 @@ pub struct EngineStatus {
     pub model_label: String,
     pub device: Option<String>,
     #[serde(default)]
-    pub languages: Vec<String>,
-    #[serde(default)]
     pub problem: String,
 }
 
@@ -37,7 +35,6 @@ pub async fn engine_status(state: &AppState) -> EngineStatus {
         model: String::new(),
         model_label: String::new(),
         device: None,
-        languages: vec![],
         problem: "The voice worker is not running, so voices cannot be created or spoken.".into(),
     })
 }

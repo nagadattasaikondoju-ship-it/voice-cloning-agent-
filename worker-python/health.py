@@ -4,7 +4,6 @@ import json
 import time
 
 import tts
-from settings import CHATTERBOX_MODEL
 
 REDIS_KEY = "engine_health"
 
@@ -14,10 +13,9 @@ def report(status: str, problem: str = "") -> dict:
         "ok": status == "ready",
         "status": status,  # loading | ready | error
         "engine": "chatterbox",
-        "model": CHATTERBOX_MODEL,
-        "model_label": tts.MODELS.get(CHATTERBOX_MODEL, CHATTERBOX_MODEL),
+        "model": tts.MODEL,
+        "model_label": tts.MODEL_LABEL,
         "device": tts.device(),
-        "languages": tts.languages(),
         "problem": problem,
         "checked_at": int(time.time()),
     }
