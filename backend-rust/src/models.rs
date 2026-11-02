@@ -99,8 +99,6 @@ pub struct VoiceClone {
     pub display_name: String,
     pub voice_id: String,
     pub engine: String,
-    #[serde(skip)]
-    pub provider_voice_id: Option<String>,
     pub status: String,
     pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -108,15 +106,14 @@ pub struct VoiceClone {
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
-pub const CLONE_COLUMNS: &str = "id, user_id, consent_id, sample_id, display_name, voice_id, engine, \
-     provider_voice_id, status, error_message, created_at, deleted_at";
+pub const CLONE_COLUMNS: &str =
+    "id, user_id, consent_id, sample_id, display_name, voice_id, engine, status, error_message, created_at, deleted_at";
 
 #[derive(Debug, Deserialize)]
 pub struct CreateVoiceCloneRequest {
     pub consent_id: Uuid,
     pub sample_id: Uuid,
     pub display_name: String,
-    pub engine: Option<String>,
 }
 
 // ---------- Speech ----------
@@ -135,7 +132,8 @@ pub struct GenerateSpeechRequest {
     pub text: String,
     pub speed: Option<f64>,
     pub volume: Option<f64>,
-    pub pitch: Option<i32>,
+    /// ISO 639-1 code; only "en" unless the worker runs the multilingual model.
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -159,7 +157,7 @@ pub struct SpeechHistoryItem {
     pub speech_job_id: Uuid,
     pub voice_clone_id: Uuid,
     pub voice_name: String,
-    pub engine: String,
+    pub language: String,
     pub text: String,
     pub duration_seconds: Option<f64>,
     pub created_at: DateTime<Utc>,
@@ -173,30 +171,23 @@ pub struct SpeechHistoryItem {
 pub struct CloneWorkerJob {
     pub job_id: Uuid,
     pub user_id: Uuid,
-    pub engine: String,
+    pub voice_id: String,
     pub sample_storage_path: String,
-    pub requested_voice_id: String,
-    pub display_name: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SpeechWorkerJob {
     pub job_id: Uuid,
     pub user_id: Uuid,
-    pub engine: String,
     pub voice_id: String,
-    pub provider_voice_id: Option<String>,
-    pub sample_storage_path: String,
     pub text: String,
     pub speed: f64,
     pub volume: f64,
-    pub pitch: i32,
+    pub language: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct DeleteVoiceWorkerJob {
     pub user_id: Uuid,
-    pub engine: String,
     pub voice_id: String,
-    pub provider_voice_id: Option<String>,
 }

@@ -87,7 +87,7 @@
   <!-- Main Content Layout -->
   <main class="app-main">
 
-    <!-- Voice engine status (filled from GET /api/engines) -->
+    <!-- Voice engine status (filled from GET /api/engine) -->
     <div id="free-cloning-banner" class="balance-banner free-active-banner">
       <div class="banner-icon banner-icon-success">
         <i class="fa-solid fa-wand-magic-sparkles"></i>
@@ -95,7 +95,7 @@
       <div class="banner-content">
         <div class="banner-title">
           <span>Consent-verified voice cloning</span>
-          <span class="badge-success" id="engine-banner-badge">Checking engines…</span>
+          <span class="badge-success" id="engine-banner-badge">Checking voice engine…</span>
         </div>
         <div class="banner-desc" id="engine-banner-desc">
           Every clone requires a spoken consent phrase that is transcribed by Whisper and matched on the server.
@@ -144,7 +144,7 @@
           <div class="metric-icon-wrap">#</div>
           <div class="metric-data">
             <span class="metric-num" id="metric-model-name">—</span>
-            <span class="metric-title">Synthesis Engine</span>
+            <span class="metric-title">Voice Engine</span>
           </div>
         </div>
       </div>
@@ -169,7 +169,7 @@
             <i class="fa-solid fa-wand-magic-sparkles fa-2x"></i>
             <h3>Synthesize Audio</h3>
           </div>
-          <p>Generate lifelike MP3 speech from text with adjustable speed, pitch, and studio volume.</p>
+          <p>Generate lifelike MP3 speech from text with adjustable speed and volume.</p>
           <button class="pill-btn pill-btn-white" onclick="switchTab('speech-studio')">
             Open TTS Studio <i class="fa-solid fa-arrow-right"></i>
           </button>
@@ -362,10 +362,10 @@
         <div class="step-box">
           <div class="step-box-header">
             <h3><i class="fa-solid fa-dna"></i> Step 3: Create Voice Model</h3>
-            <span class="badge-tag" id="step3-engine-badge">Choose an engine</span>
+            <span class="badge-tag" id="step3-engine-badge">Chatterbox (local)</span>
           </div>
           <p class="step-desc">
-            Name your voice and choose the engine that will clone it. The job runs in the background; you can watch its status below.
+            Name your voice. It is prepared in the background in a few seconds; you can watch its status below.
           </p>
 
           <form id="form-clone-voice" class="clone-config-form">
@@ -375,11 +375,6 @@
               <span class="input-hint">A human-readable label for your dashboard selector.</span>
             </div>
 
-            <div class="form-group">
-              <label for="clone-engine-select">Voice Engine</label>
-              <select id="clone-engine-select" class="input-dark select-custom" required></select>
-              <span class="input-hint" id="clone-engine-hint">Engines without server credentials are disabled.</span>
-            </div>
 
             <div class="clone-summary-card">
               <h4>Review Submission</h4>
@@ -392,7 +387,7 @@
                 <strong id="summary-consent-status">Not verified</strong>
               </div>
               <div class="summary-item">
-                <span>Engine Target:</span>
+                <span>Engine:</span>
                 <strong id="summary-engine-name">—</strong>
               </div>
             </div>
@@ -447,6 +442,11 @@
               </select>
             </div>
 
+            <div class="form-group" id="tts-language-group" style="display: none">
+              <label for="tts-language-select">Language</label>
+              <select id="tts-language-select" class="input-dark select-custom"></select>
+            </div>
+
             <div class="form-group">
               <div class="textarea-header">
                 <label for="tts-text-input">Speech Script</label>
@@ -485,14 +485,6 @@
                   <span class="slider-val" id="val-volume">1.0</span>
                 </div>
                 <input type="range" id="slider-volume" min="0.1" max="2.0" step="0.1" value="1.0" class="custom-range" />
-              </div>
-
-              <div class="slider-group">
-                <div class="slider-header">
-                  <span>Pitch</span>
-                  <span class="slider-val" id="val-pitch">0</span>
-                </div>
-                <input type="range" id="slider-pitch" min="-12" max="12" step="1" value="0" class="custom-range" />
               </div>
             </div>
 
@@ -561,7 +553,7 @@
     <section id="tab-settings" class="tab-pane">
       <div class="view-header">
         <h1 class="view-title">Settings & Governance</h1>
-        <p class="view-subtitle">Manage your account, engines, and privacy controls.</p>
+        <p class="view-subtitle">Manage your account, voice engine, and privacy controls.</p>
       </div>
 
       <div class="settings-grid">
@@ -582,11 +574,11 @@
           </div>
         </div>
 
-        <!-- Voice engines (server-side configuration) -->
+        <!-- Voice engine (local Chatterbox model run by the worker) -->
         <div class="settings-card">
-          <h3><i class="fa-solid fa-server text-primary"></i> Voice Engines</h3>
+          <h3><i class="fa-solid fa-server text-primary"></i> Voice Engine</h3>
           <p class="settings-desc">
-            API keys live only in the server environment (<code>MINIMAX_API_KEY</code>, <code>ELEVENLABS_API_KEY</code>, <code>HF_TOKEN</code>) and are never sent to the browser.
+            Voices are cloned by Chatterbox (Resemble AI, MIT license) running on your own machine. No API keys, no usage limits. Generated audio carries an inaudible AI watermark.
           </p>
           <div id="engine-status-list" class="engine-status-list"></div>
         </div>

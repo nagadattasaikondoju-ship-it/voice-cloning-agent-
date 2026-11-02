@@ -1,0 +1,13 @@
+# Give the voice worker the NVIDIA GPU. Requires an NVIDIA driver; on Windows, Docker Desktop with WSL2.
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+services:
+  worker-python:
+    environment:
+      CHATTERBOX_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -38,13 +38,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env();
-    tracing::info!(
-        "Engines: f5={} minimax={} elevenlabs={} | speech pipeline: {}",
-        config.f5_enabled,
-        config.minimax_enabled,
-        config.elevenlabs_enabled,
-        config.speech_pipeline_url
-    );
+    tracing::info!("Speech pipeline: {}", config.speech_pipeline_url);
 
     let db = init_db(&config.database_url).await?;
     let redis = redis::Client::open(config.redis_url.clone())?;
@@ -61,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/api/health", get(meta_routes::health))
-        .route("/api/engines", get(meta_routes::engines))
+        .route("/api/engine", get(meta_routes::engine))
         // Auth
         .route("/api/auth/register", post(auth_routes::register))
         .route("/api/auth/login", post(auth_routes::login))

@@ -13,23 +13,10 @@ pub struct Config {
     /// Minimum word-level similarity (0..1) between the consent phrase and the transcript.
     pub consent_match_threshold: f64,
     pub consent_max_attempts: i32,
-    /// Engines are offered to users only when their worker credentials are configured.
-    pub minimax_enabled: bool,
-    pub elevenlabs_enabled: bool,
-    pub f5_enabled: bool,
 }
 
 fn env_or(key: &str, default: &str) -> String {
     env::var(key).ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| default.to_string())
-}
-
-fn has_real_key(key: &str) -> bool {
-    env::var(key)
-        .map(|v| {
-            let v = v.trim();
-            !v.is_empty() && !v.starts_with("your_") && !v.starts_with("mock_")
-        })
-        .unwrap_or(false)
 }
 
 impl Config {
@@ -62,18 +49,6 @@ impl Config {
                 .to_string(),
             consent_match_threshold: env_or("CONSENT_MATCH_THRESHOLD", "0.75").parse().unwrap_or(0.75),
             consent_max_attempts: env_or("CONSENT_MAX_ATTEMPTS", "5").parse().unwrap_or(5),
-            minimax_enabled: has_real_key("MINIMAX_API_KEY"),
-            elevenlabs_enabled: has_real_key("ELEVENLABS_API_KEY"),
-            f5_enabled: env_or("F5_TTS_ENABLED", "true") == "true",
-        }
-    }
-
-    pub fn engine_enabled(&self, engine: &str) -> bool {
-        match engine {
-            "minimax" => self.minimax_enabled,
-            "elevenlabs" => self.elevenlabs_enabled,
-            "f5" => self.f5_enabled,
-            _ => false,
         }
     }
 }

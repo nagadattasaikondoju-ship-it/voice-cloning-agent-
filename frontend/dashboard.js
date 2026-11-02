@@ -9,13 +9,13 @@
 
 const API_BASE_URL = ((window.APP_CONFIG && window.APP_CONFIG.apiBaseUrl) || "http://localhost:8080").replace(/\/$/, "");
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
-const MIN_SAMPLE_SECONDS = 5;
+const MIN_SAMPLE_SECONDS = 6;
 const MAX_SAMPLE_SECONDS = 300;
 
 const STATE = {
   token: localStorage.getItem("auth_token"),
   user: null,
-  engines: [],
+  engine: null,
   currentStep: 1,
   sampleBlob: null,
   sampleFileName: null,
@@ -84,7 +84,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   initTTSStudio();
   initSettings();
 
-  loadEngines();
+  loadEngine();
   loadHealth();
 
   if (!STATE.token) {
@@ -140,11 +140,6 @@ function setButtonBusy(btn, busy, busyHtml) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function engineName(id) {
-  const e = STATE.engines.find((x) => x.id === id);
-  return e ? e.name : id;
-}
 
 function extensionForMime(mime) {
   const m = (mime || "").toLowerCase();
@@ -278,49 +273,50 @@ function onSignedIn(token, user) {
 /* ==========================================================================
    Engines & health
    ========================================================================== */
-async function loadEngines() {
+const LANGUAGE_NAMES = {
+  ar: "Arabic", da: "Danish", de: "German", el: "Greek", en: "English", es: "Spanish", fi: "Finnish",
+  fr: "French", he: "Hebrew", hi: "Hindi", it: "Italian", ja: "Japanese", ko: "Korean", ms: "Malay",
+  nl: "Dutch", no: "Norwegian", pl: "Polish", pt: "Portuguese", ru: "Russian", sv: "Swedish",
+  sw: "Swahili", tr: "Turkish", zh: "Chinese",
+};
+
+/** Engine status from the worker heartbeat; polled while the model is loading. */
+async function loadEngine() {
+  let e;
   try {
-    STATE.engines = await api("/api/engines");
+    e = await api("/api/engine");
   } catch (err) {
-    STATE.engines = [];
-    document.getElementById("engine-banner-badge").textContent = "API offline";
-    document.getElementById("engine-banner-desc").textContent = err.message;
-    return;
+    e = { ok: false, status: "offline", problem: err.message, languages: [] };
   }
-  const available = STATE.engines.filter((e) => e.available);
+  STATE.engine = e;
+  const label = e.model_label ? `Chatterbox · ${e.model_label}` : "Chatterbox";
+  const where = e.device ? (e.device === "cuda" ? "GPU" : "CPU") : "";
+  const statusText = { ready: "Ready", loading: "Loading model…", error: "Error", offline: "Offline" }[e.status] || e.status;
 
-  document.getElementById("engine-banner-badge").textContent = available.length
-    ? `Engines: ${available.map((e) => e.name.split(" (")[0]).join(" · ")}`
-    : "No voice engine is usable";
-  if (!available.length && STATE.engines[0]) {
-    document.getElementById("engine-banner-desc").textContent =
-      "Cloning will not work until an engine is fixed: " + STATE.engines.map((e) => `${e.name.split(" (")[0]}: ${e.problem}`).join(" | ");
-  }
-  document.getElementById("metric-model-name").textContent = available.length ? String(available.length) : "0";
+  document.getElementById("engine-banner-badge").textContent = `${label} · ${statusText}${where ? " on " + where : ""}`;
+  document.getElementById("engine-banner-desc").textContent = e.ok
+    ? "Every clone requires a spoken consent phrase that is transcribed by Whisper and matched on the server."
+    : e.problem || "The voice engine is not ready.";
+  document.getElementById("metric-model-name").textContent = e.ok ? where || "Ready" : statusText;
+  document.getElementById("summary-engine-name").textContent = label;
+  document.getElementById("engine-status-list").innerHTML = `
+    <div class="engine-status-item">
+      <div><strong>${escapeHtml(label)}</strong>
+        <p>Device: ${escapeHtml(where || "—")} · Languages: ${escapeHtml((e.languages || []).map((l) => LANGUAGE_NAMES[l] || l).join(", ") || "—")}</p>
+        ${e.problem ? `<p class="engine-problem"><i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(e.problem)}</p>` : ""}
+      </div>
+      <span class="status-badge ${e.ok ? "ready" : e.status === "loading" ? "processing" : "failed"}">${escapeHtml(statusText)}</span>
+    </div>`;
 
-  const select = document.getElementById("clone-engine-select");
-  select.innerHTML = "";
-  STATE.engines.forEach((e) => {
-    const opt = document.createElement("option");
-    opt.value = e.id;
-    opt.textContent = e.available ? e.name : `${e.name} (unavailable)`;
-    opt.disabled = !e.available;
-    select.appendChild(opt);
-  });
-  if (available[0]) select.value = available[0].id;
-  updateEngineSummary();
+  const langs = e.languages || [];
+  const group = document.getElementById("tts-language-group");
+  const select = document.getElementById("tts-language-select");
+  group.style.display = langs.length > 1 ? "" : "none"; // .form-group CSS overrides [hidden]
+  const current = select.value;
+  select.innerHTML = langs.map((l) => `<option value="${l}">${escapeHtml(LANGUAGE_NAMES[l] || l)}</option>`).join("");
+  select.value = langs.includes(current) ? current : langs.includes("en") ? "en" : langs[0] || "";
 
-  document.getElementById("engine-status-list").innerHTML = STATE.engines
-    .map(
-      (e) => `
-      <div class="engine-status-item">
-        <div><strong>${escapeHtml(e.name)}</strong><p>${escapeHtml(e.description)}</p>
-          ${e.problem ? `<p class="engine-problem"><i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(e.problem)}</p>` : ""}
-          ${e.detail ? `<p>${escapeHtml(e.detail)}</p>` : ""}</div>
-        <span class="status-badge ${e.available ? "ready" : "failed"}">${e.available ? "available" : "unavailable"}</span>
-      </div>`
-    )
-    .join("");
+  if (e.status === "loading") setTimeout(loadEngine, 5000);
 }
 
 async function loadHealth() {
@@ -335,18 +331,10 @@ async function loadHealth() {
       row("PostgreSQL", h.database) +
       row("Redis job queue", h.redis) +
       row("Whisper speech pipeline", h.speech_pipeline, "Online", "Offline (consent checks will fail)") +
-      row("Voice worker", h.worker, "Running", "Not running (clone and speech jobs will stay queued)");
+      row("Voice worker", h.worker === "ready", "Ready", h.worker === "loading" ? "Loading model…" : "Not running (jobs will not run)");
   } catch {
     list.innerHTML = row("Rust API (Axum)", false, "Online", `Offline (${API_BASE_URL})`);
   }
-}
-
-function updateEngineSummary() {
-  const id = document.getElementById("clone-engine-select").value;
-  const engine = STATE.engines.find((e) => e.id === id);
-  document.getElementById("summary-engine-name").textContent = engine ? engine.name : "—";
-  document.getElementById("step3-engine-badge").textContent = engine ? `Engine: ${engine.name.split(" (")[0]}` : "Choose an engine";
-  document.getElementById("clone-engine-hint").textContent = engine ? [engine.description, engine.detail].filter(Boolean).join(" ") : "";
 }
 
 /* ==========================================================================
@@ -381,11 +369,10 @@ function renderClonedVoices() {
     .forEach((v) => {
       const opt = document.createElement("option");
       opt.value = v.id;
-      opt.textContent = `${v.display_name} — ${engineName(v.engine)}`;
+      opt.textContent = v.display_name;
       select.appendChild(opt);
     });
   if (previous && [...select.options].some((o) => o.value === previous)) select.value = previous;
-  updateControlHints();
 
   if (STATE.clonedVoices.length === 0) {
     container.innerHTML = `
@@ -406,7 +393,6 @@ function renderClonedVoices() {
         <div>
           <h4 class="voice-name">${escapeHtml(voice.display_name)}</h4>
           <span class="voice-id-tag">${escapeHtml(voice.voice_id)}</span>
-          <span class="engine-tag">${escapeHtml(engineName(voice.engine))}</span>
           ${voice.error_message ? `<div class="voice-error"><i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(voice.error_message)}</div>` : ""}
         </div>
         <span class="status-badge ${escapeHtml(voice.status)}">${escapeHtml(voice.status)}</span>
@@ -423,15 +409,14 @@ function renderClonedVoices() {
     card.querySelector(".btn-test-voice").addEventListener("click", () => {
       switchTab("speech-studio");
       select.value = voice.id;
-      updateControlHints();
-      const input = document.getElementById("tts-text-input");
+          const input = document.getElementById("tts-text-input");
       if (!input.value.trim()) {
         input.value = `Hello! This is a preview of my cloned voice, ${voice.display_name}.`;
         document.getElementById("tts-char-counter").textContent = `${input.value.length} / 5000`;
       }
     });
     card.querySelector(".btn-delete-voice").addEventListener("click", async () => {
-      if (confirm(`Delete voice "${voice.display_name}"? It is also removed from the provider.`)) {
+      if (confirm(`Delete voice "${voice.display_name}"?`)) {
         await deleteClonedVoice(voice.id);
       }
     });
@@ -469,7 +454,6 @@ function initVoiceStudio() {
   document.getElementById("btn-next-step-2").addEventListener("click", verifyConsent);
   document.getElementById("btn-back-step-3").addEventListener("click", () => goToStudioStep(2));
   document.getElementById("btn-regenerate-phrase").addEventListener("click", () => issueConsentPhrase(true));
-  document.getElementById("clone-engine-select").addEventListener("change", updateEngineSummary);
   document.getElementById("btn-next-step-1").disabled = true;
 
   setupMediaRecorder({
@@ -568,7 +552,6 @@ function goToStudioStep(step) {
   if (step === 3) {
     const nameInput = document.getElementById("clone-display-name");
     if (!nameInput.value) nameInput.value = "My Voice";
-    updateEngineSummary();
   }
   for (let i = 1; i <= 3; i++) {
     const node = document.getElementById(`step-node-${i}`);
@@ -677,7 +660,6 @@ async function handleVoiceCloneSubmit(e) {
         consent_id: STATE.consent.id,
         sample_id: sample.id,
         display_name: document.getElementById("clone-display-name").value.trim(),
-        engine: document.getElementById("clone-engine-select").value,
       },
     });
     showToast(`"${clone.display_name}" queued. Status updates appear below.`, "success");
@@ -788,10 +770,6 @@ function initTTSStudio() {
   document.getElementById("slider-volume").addEventListener("input", (e) => {
     document.getElementById("val-volume").textContent = parseFloat(e.target.value).toFixed(1);
   });
-  document.getElementById("slider-pitch").addEventListener("input", (e) => {
-    document.getElementById("val-pitch").textContent = e.target.value;
-  });
-  document.getElementById("tts-voice-select").addEventListener("change", updateControlHints);
   const scriptInput = document.getElementById("script-file-input");
   document.getElementById("btn-import-script").addEventListener("click", () => scriptInput.click());
   scriptInput.addEventListener("change", (e) => {
@@ -851,18 +829,6 @@ async function importScript(file) {
   }
 }
 
-/** Not every engine honours every slider; say so instead of silently ignoring it. */
-function updateControlHints() {
-  const voice = STATE.clonedVoices.find((v) => v.id === document.getElementById("tts-voice-select").value);
-  const unsupported = { f5: ["speed", "volume", "pitch"], elevenlabs: ["volume", "pitch"], minimax: [] };
-  const off = voice ? unsupported[voice.engine] || [] : [];
-  ["speed", "volume", "pitch"].forEach((k) => {
-    const slider = document.getElementById(`slider-${k}`);
-    slider.disabled = off.includes(k);
-    slider.title = off.includes(k) ? `Not supported by ${engineName(voice.engine)}` : "";
-  });
-}
-
 async function handleTTSGenerate(e) {
   e.preventDefault();
   const voiceId = document.getElementById("tts-voice-select").value;
@@ -882,7 +848,7 @@ async function handleTTSGenerate(e) {
         text,
         speed: parseFloat(document.getElementById("slider-speed").value),
         volume: parseFloat(document.getElementById("slider-volume").value),
-        pitch: parseInt(document.getElementById("slider-pitch").value, 10),
+        language: document.getElementById("tts-language-select").value || "en",
       },
     });
 
@@ -979,7 +945,7 @@ function renderSpeechHistory() {
       <div class="history-details">
         <div class="history-text">"${escapeHtml(item.text)}"</div>
         <div class="history-meta">
-          <span><i class="fa-solid fa-microphone"></i> ${escapeHtml(item.voice_name)} · ${escapeHtml(engineName(item.engine))}</span>
+          <span><i class="fa-solid fa-microphone"></i> ${escapeHtml(item.voice_name)} · ${escapeHtml(LANGUAGE_NAMES[item.language] || item.language)}</span>
           <span><i class="fa-regular fa-clock"></i> ${new Date(item.created_at).toLocaleString()}</span>
           ${item.duration_seconds ? `<span>${Number(item.duration_seconds).toFixed(1)}s</span>` : ""}
         </div>
@@ -1022,7 +988,7 @@ async function deleteHistoryAudio(id, quiet = false) {
 function initSettings() {
   document.getElementById("btn-delete-all-voices").addEventListener("click", async () => {
     if (!STATE.clonedVoices.length) return showToast("No voices to delete.", "info");
-    if (!confirm("Permanently delete ALL your cloned voices (including from providers)?")) return;
+    if (!confirm("Permanently delete ALL your cloned voices?")) return;
     for (const v of [...STATE.clonedVoices]) await deleteClonedVoice(v.id, true);
     showToast("All cloned voices deleted", "success");
   });

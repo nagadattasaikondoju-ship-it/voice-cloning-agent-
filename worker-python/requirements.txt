@@ -1,6 +1,7 @@
-requests>=2.31.0
+# torch/torchaudio 2.6.0 are installed first in the Dockerfile (CUDA or CPU build).
+chatterbox-tts==0.1.7
+# resemble-perth (Chatterbox's watermarker) imports pkg_resources, removed from newer setuptools
+setuptools<81
 redis>=5.0.0
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.0
-gradio_client>=1.3.0
-boto3>=1.34.0
