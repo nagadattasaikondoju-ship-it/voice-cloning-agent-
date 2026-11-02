@@ -1,11 +1,4 @@
 /* Fonts */
-@font-face {
-  font-family: "Geist Pixel Circle";
-  src: url("fonts/GeistPixel-Circle.woff2") format("woff2");
-  font-weight: 400;
-  font-display: swap;
-}
-
 :root {
   --bg: #000000;
   --text: #ffffff;
@@ -18,7 +11,7 @@
   --trust-border: rgba(255, 255, 255, 0.4);
   --trust-text: #c4c2c3;
   --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
-  --font-display: "BubbledotICG-FinePos", "Geist Pixel Circle", monospace;
+  --font-display: "BubbledotICG-FinePos", monospace;
 }
 
 *, *::before, *::after {
