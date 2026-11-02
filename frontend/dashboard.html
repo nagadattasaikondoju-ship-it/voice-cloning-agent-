@@ -87,23 +87,23 @@
   <!-- Main Content Layout -->
   <main class="app-main">
 
-    <!-- 100% Free Voice Cloning Active Banner -->
+    <!-- Voice engine status (filled from GET /api/engines) -->
     <div id="free-cloning-banner" class="balance-banner free-active-banner">
       <div class="banner-icon banner-icon-success">
         <i class="fa-solid fa-wand-magic-sparkles"></i>
       </div>
       <div class="banner-content">
         <div class="banner-title">
-          <span>Free AI Voice Cloning Active</span>
-          <span class="badge-success">100% Free · Hugging Face F5-TTS Engine</span>
+          <span>Consent-verified voice cloning</span>
+          <span class="badge-success" id="engine-banner-badge">Checking engines…</span>
         </div>
-        <div class="banner-desc">
-          Zero-shot neural voice cloning is enabled without any credits, credit card, or fees. Your reference sample is linked and ready to generate authentic speech in your own voice!
+        <div class="banner-desc" id="engine-banner-desc">
+          Every clone requires a spoken consent phrase that is transcribed by Whisper and matched on the server.
         </div>
       </div>
       <div class="banner-actions">
-        <button type="button" class="pill-btn pill-btn-primary pill-btn-sm" onclick="switchTab('speech-studio')">
-          <i class="fa-solid fa-waveform"></i> Generate Voice Now
+        <button type="button" class="pill-btn pill-btn-primary pill-btn-sm" onclick="switchTab('voice-studio')">
+          <i class="fa-solid fa-microphone"></i> Clone My Voice
         </button>
       </div>
     </div>
@@ -114,7 +114,7 @@
     <section id="tab-overview" class="tab-pane active">
       <div class="view-header">
         <h1 class="view-title">Studio Dashboard</h1>
-        <p class="view-subtitle">High-fidelity voice synthesis powered by Hugging Face F5-TTS Zero-Shot Engine.</p>
+        <p class="view-subtitle">Clone your own voice with verified consent and generate speech from text.</p>
       </div>
 
       <!-- Quick Metrics Grid -->
@@ -136,14 +136,14 @@
         <div class="metric-card">
           <div class="metric-icon-wrap">*</div>
           <div class="metric-data">
-            <span class="metric-num" id="metric-consent-status">Verified</span>
-            <span class="metric-title">Consent Compliance</span>
+            <span class="metric-num" id="metric-consent-status">—</span>
+            <span class="metric-title">Verified Consents</span>
           </div>
         </div>
         <div class="metric-card">
           <div class="metric-icon-wrap">#</div>
           <div class="metric-data">
-            <span class="metric-num" id="metric-model-name">HD 2.8</span>
+            <span class="metric-num" id="metric-model-name">—</span>
             <span class="metric-title">Synthesis Engine</span>
           </div>
         </div>
@@ -197,7 +197,7 @@
     <section id="tab-voice-studio" class="tab-pane">
       <div class="view-header">
         <h1 class="view-title">Voice Onboarding & Cloning</h1>
-        <p class="view-subtitle">Upload source audio, complete spoken consent verification, and deploy your Hugging Face F5-TTS voice model.</p>
+        <p class="view-subtitle">Upload a sample, verify spoken consent, and create your voice model.</p>
       </div>
 
       <!-- Step Navigation Stepper -->
@@ -262,7 +262,7 @@
               <div class="drop-zone" id="sample-drop-zone">
                 <i class="fa-solid fa-file-arrow-up fa-3x"></i>
                 <p>Drag audio file here or <span class="browse-link">browse</span></p>
-                <input type="file" id="sample-file-input" accept=".mp3,.m4a,.wav,audio/mp3,audio/wav,audio/x-m4a,audio/m4a" hidden />
+                <input type="file" id="sample-file-input" accept=".mp3,.m4a,.wav,.webm,.ogg,audio/*" hidden />
                 <span class="drop-hint">MP3, M4A, WAV (10s – 5 mins, max 20MB)</span>
               </div>
 
@@ -277,32 +277,10 @@
             </div>
           </div>
 
-          <!-- Transcript of the voice sample (Mandatory for flawless neural voice alignment) -->
-          <div class="form-group" style="margin-top: 20px; background: rgba(255,255,255,0.03); padding: 16px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <label for="sample-transcript-input" style="font-weight: 600; color: #fff; margin: 0;">
-                <i class="fa-solid fa-closed-captioning text-primary"></i> Sample Reference Transcript
-              </label>
-              <span id="speech-recognition-badge" class="badge-tag" style="display: none; background: rgba(16, 185, 129, 0.2); color: #10b981;">
-                <i class="fa-solid fa-waveform-lines"></i> Live Speech Detection Active
-              </span>
-            </div>
-            <textarea
-              id="sample-transcript-input"
-              class="input-dark"
-              rows="2"
-              placeholder="Type or verify the exact words spoken in this audio sample (e.g. 5–10 words). When recording via microphone, the browser detects words automatically..."
-              style="width: 100%; resize: vertical;"
-            ></textarea>
-            <span class="input-hint" style="color: #94a3b8; font-size: 12px; margin-top: 6px; display: block;">
-              <i class="fa-solid fa-lightbulb" style="color: #f59e0b;"></i> <strong>Why this matters:</strong> Free zero-shot neural AI aligns acoustic frames to these exact words. Having the matching transcript guarantees crystal-clear voice cloning without any stutter or distortion.
-            </span>
-          </div>
-
           <div class="quality-guidelines">
             <h4><i class="fa-solid fa-circle-info"></i> Audio Quality Guidelines</h4>
             <ul>
-              <li><i class="fa-solid fa-check"></i> <strong>Duration:</strong> 3 to 10 seconds of clear speech is optimal for zero-shot cloning.</li>
+              <li><i class="fa-solid fa-check"></i> <strong>Duration:</strong> 10 to 60 seconds of clear speech (minimum 5 s, maximum 5 min, 20 MB).</li>
               <li><i class="fa-solid fa-check"></i> <strong>Acoustics:</strong> Minimize echo, background noise, or background music.</li>
               <li><i class="fa-solid fa-check"></i> <strong>Delivery:</strong> Speak naturally with clear pronunciation and steady volume.</li>
             </ul>
@@ -325,15 +303,12 @@
             <span class="badge-tag badge-security">Strict Authentication</span>
           </div>
           <p class="step-desc">
-            To prevent unauthorized voice cloning, you must record yourself speaking the randomized verification phrase below.
-            Cloning is strictly prohibited without explicit user verification.
+            To prevent unauthorized cloning, record yourself reading the phrase below. The server transcribes your recording with Whisper and only unlocks cloning if it matches.
           </p>
 
           <div class="consent-phrase-box">
             <span class="phrase-label">Please read aloud clearly:</span>
-            <blockquote class="consent-phrase-text" id="consent-phrase-display">
-              "I hereby confirm that I am the authorized owner of this voice and I grant permission to clone it for my personal account."
-            </blockquote>
+            <blockquote class="consent-phrase-text" id="consent-phrase-display">Loading a verification phrase…</blockquote>
             <button class="btn-refresh-phrase" id="btn-regenerate-phrase" title="Generate new phrase">
               <i class="fa-solid fa-arrows-rotate"></i> New Phrase
             </button>
@@ -360,14 +335,14 @@
             </div>
           </div>
 
+          <div id="consent-verify-result" class="consent-verify-result" hidden></div>
+
           <!-- Legal Confirmation Checkbox -->
           <div class="consent-agreement">
             <label class="checkbox-container">
               <input type="checkbox" id="consent-checkbox" />
               <span class="checkmark"></span>
-              <span class="checkbox-label">
-                I declare under penalty of terms violation that this voice sample is my own personal voice, and I authorize the creation of a private synthetic voice model through Hugging Face F5-TTS solely for this account.
-              </span>
+              <span class="checkbox-label">I confirm this is my own voice, and I authorize the creation of a private synthetic voice model from it for use only on this account.</span>
             </label>
           </div>
 
@@ -376,7 +351,7 @@
               <i class="fa-solid fa-arrow-left"></i> Back
             </button>
             <button class="pill-btn pill-btn-primary" id="btn-next-step-2" disabled>
-              Verify & Continue <i class="fa-solid fa-arrow-right"></i>
+              <span id="btn-next-step-2-label">Verify with Whisper &amp; Continue</span> <i class="fa-solid fa-arrow-right"></i>
             </button>
           </div>
         </div>
@@ -386,11 +361,11 @@
       <div class="studio-step-content" id="studio-step-3">
         <div class="step-box">
           <div class="step-box-header">
-            <h3><i class="fa-solid fa-dna"></i> Step 3: Deploy Hugging Face Voice Model</h3>
-            <span class="badge-tag">Engine: F5-TTS Zero-Shot</span>
+            <h3><i class="fa-solid fa-dna"></i> Step 3: Create Voice Model</h3>
+            <span class="badge-tag" id="step3-engine-badge">Choose an engine</span>
           </div>
           <p class="step-desc">
-            Assign a memorable name and ID to your voice. The sample will be registered with Hugging Face F5-TTS for zero-shot neural cloning.
+            Name your voice and choose the engine that will clone it. The job runs in the background; you can watch its status below.
           </p>
 
           <form id="form-clone-voice" class="clone-config-form">
@@ -401,12 +376,9 @@
             </div>
 
             <div class="form-group">
-              <label for="clone-voice-id">Custom Voice Identifier</label>
-              <div class="input-prefix-wrap">
-                <span class="input-prefix">voice_</span>
-                <input type="text" id="clone-voice-id" class="input-dark" placeholder="my_unique_id" required pattern="[a-zA-Z0-9_-]+" />
-              </div>
-              <span class="input-hint">Unique alphanumeric ID registered with Hugging Face.</span>
+              <label for="clone-engine-select">Voice Engine</label>
+              <select id="clone-engine-select" class="input-dark select-custom" required></select>
+              <span class="input-hint" id="clone-engine-hint">Engines without server credentials are disabled.</span>
             </div>
 
             <div class="clone-summary-card">
@@ -417,11 +389,11 @@
               </div>
               <div class="summary-item">
                 <span>Spoken Consent:</span>
-                <strong class="text-success"><i class="fa-solid fa-shield-check"></i> Recorded & Signed</strong>
+                <strong id="summary-consent-status">Not verified</strong>
               </div>
               <div class="summary-item">
                 <span>Engine Target:</span>
-                <strong>Hugging Face F5-TTS (100% Free)</strong>
+                <strong id="summary-engine-name">—</strong>
               </div>
             </div>
 
@@ -461,7 +433,7 @@
     <section id="tab-speech-studio" class="tab-pane">
       <div class="view-header">
         <h1 class="view-title">Speech Synthesis Studio</h1>
-        <p class="view-subtitle">Generate lifelike speech using your authenticated voice model and Hugging Face F5-TTS.</p>
+        <p class="view-subtitle">Generate speech with one of your ready voice models.</p>
       </div>
 
       <div class="tts-grid">
@@ -484,7 +456,7 @@
                 id="tts-text-input"
                 class="input-dark tts-textarea"
                 rows="7"
-                placeholder="Enter text to synthesize with your cloned voice. Hugging Face F5-TTS provides zero-shot natural cadence, emotion, and crystal clarity..."
+                placeholder="Enter the text to speak in your cloned voice…"
                 maxlength="5000"
                 required
               ></textarea>
@@ -582,7 +554,7 @@
     <section id="tab-settings" class="tab-pane">
       <div class="view-header">
         <h1 class="view-title">Settings & Governance</h1>
-        <p class="view-subtitle">Manage your account, privacy controls, and Hugging Face voice retention policy.</p>
+        <p class="view-subtitle">Manage your account, engines, and privacy controls.</p>
       </div>
 
       <div class="settings-grid">
@@ -599,22 +571,17 @@
           </div>
           <div class="settings-field">
             <label>Consent Status</label>
-            <span class="badge-tag badge-security">Verified Spoken Consent</span>
+            <span class="badge-tag badge-security" id="settings-consent-status">—</span>
           </div>
         </div>
 
-        <!-- Hugging Face Token Configuration -->
+        <!-- Voice engines (server-side configuration) -->
         <div class="settings-card">
-          <h3><i class="fa-solid fa-key text-primary"></i> Hugging Face Access Token (Unlimited Quota)</h3>
+          <h3><i class="fa-solid fa-server text-primary"></i> Voice Engines</h3>
           <p class="settings-desc">
-            To bypass public ZeroGPU rate limits and enjoy unlimited fast speech synthesis, add your free personal Hugging Face token (<a href="https://huggingface.co/settings/tokens" target="_blank" style="color: #6366f1; text-decoration: underline;">get one free in 30 seconds</a>).
+            API keys live only in the server environment (<code>MINIMAX_API_KEY</code>, <code>ELEVENLABS_API_KEY</code>, <code>HF_TOKEN</code>) and are never sent to the browser.
           </p>
-          <div class="form-group" style="margin-top: 12px;">
-            <input type="password" id="hf-token-input" class="input-dark" placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
-          </div>
-          <button class="pill-btn pill-btn-primary" id="btn-save-hf-token" type="button" style="margin-top: 10px;">
-            <i class="fa-solid fa-floppy-disk"></i> Save Access Token
-          </button>
+          <div id="engine-status-list" class="engine-status-list"></div>
         </div>
 
         <!-- Privacy & Storage Policy -->
@@ -649,23 +616,8 @@
         <!-- System Architecture Information -->
         <div class="settings-card">
           <h3><i class="fa-solid fa-server"></i> System Status</h3>
-          <ul class="system-status-list">
-            <li>
-              <span>Rust API (Axum)</span>
-              <strong class="text-success"><i class="fa-solid fa-circle-check"></i> Connected</strong>
-            </li>
-            <li>
-              <span>Neural Engine (F5-TTS)</span>
-              <strong class="text-success"><i class="fa-solid fa-circle-check"></i> Active (100% Free)</strong>
-            </li>
-            <li>
-              <span>Hugging Face Gradio API</span>
-              <strong class="text-success"><i class="fa-solid fa-circle-check"></i> Connected</strong>
-            </li>
-            <li>
-              <span>Local Storage (uploads/)</span>
-              <strong class="text-success"><i class="fa-solid fa-circle-check"></i> Encrypted</strong>
-            </li>
+          <ul class="system-status-list" id="system-status-list">
+            <li><span>Checking services…</span></li>
           </ul>
         </div>
       </div>
@@ -723,6 +675,7 @@
     </div>
   </div>
 
+  <script src="config.js"></script>
   <script src="dashboard.js"></script>
 </body>
 </html>

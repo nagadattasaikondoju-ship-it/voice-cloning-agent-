@@ -1,12 +1,14 @@
 use axum::{
     async_trait,
     extract::FromRequestParts,
-    http::{header, request::Parts, StatusCode},
+    http::{header, request::Parts},
 };
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::{db::AppState, error::ApiError};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -18,33 +20,18 @@ pub struct Claims {
 
 pub fn create_jwt(user_id: &Uuid, email: &str, secret: &str) -> Result<String, jsonwebtoken::errors::Error> {
     let now = Utc::now();
-    let exp = now + Duration::days(7);
-
     let claims = Claims {
         sub: user_id.to_string(),
         email: email.to_string(),
-        exp: exp.timestamp(),
+        exp: (now + Duration::hours(24)).timestamp(),
         iat: now.timestamp(),
     };
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
+    encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes()))
 }
 
 pub fn verify_jwt(token: &str, secret: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
-    let mut validation = Validation::default();
-    validation.validate_exp = true;
-
-    let token_data = decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    )?;
-
-    Ok(token_data.claims)
+    let validation = Validation::default(); // HS256, validates exp
+    Ok(decode::<Claims>(token, &DecodingKey::from_secret(secret.as_bytes()), &validation)?.claims)
 }
 
 pub fn hash_password(password: &str) -> Result<String, bcrypt::BcryptError> {
@@ -55,45 +42,31 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     bcrypt::verify(password, hash).unwrap_or(false)
 }
 
-// Axum Extractor for Authenticated Users
+/// Authenticated user extracted from `Authorization: Bearer <jwt>`.
 pub struct AuthUser {
     pub user_id: Uuid,
+    #[allow(dead_code)]
     pub email: String,
 }
 
 #[async_trait]
-impl<S> FromRequestParts<S> for AuthUser
-where
-    S: Send + Sync,
-{
-    type Rejection = (StatusCode, &'static str);
+impl FromRequestParts<AppState> for AuthUser {
+    type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let auth_header = parts
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let token = parts
             .headers
             .get(header::AUTHORIZATION)
-            .and_then(|val| val.to_str().ok())
-            .ok_or((StatusCode::UNAUTHORIZED, "Missing Authorization header"))?;
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::trim)
+            .ok_or_else(|| ApiError::unauthorized("Missing or malformed Authorization header"))?;
 
-        let token = if let Some(stripped) = auth_header.strip_prefix("Bearer ") {
-            stripped.trim()
-        } else {
-            return Err((StatusCode::UNAUTHORIZED, "Invalid Bearer token format"));
-        };
-
-        // Read JWT secret from environment or fallback
-        let secret = std::env::var("JWT_SECRET")
-            .unwrap_or_else(|_| "super_secret_jwt_key_intelligence_evolve_2026".to_string());
-
-        let claims = verify_jwt(token, &secret)
-            .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid or expired token"))?;
-
+        let claims = verify_jwt(token, &state.config.jwt_secret)
+            .map_err(|_| ApiError::unauthorized("Invalid or expired token"))?;
         let user_id = Uuid::parse_str(&claims.sub)
-            .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid user identifier in token"))?;
+            .map_err(|_| ApiError::unauthorized("Invalid token subject"))?;
 
-        Ok(AuthUser {
-            user_id,
-            email: claims.email,
-        })
+        Ok(AuthUser { user_id, email: claims.email })
     }
 }

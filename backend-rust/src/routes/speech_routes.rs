@@ -1,307 +1,202 @@
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
-    response::Response,
+    http::header,
+    response::{IntoResponse, Response},
     Json,
 };
-use redis::AsyncCommands;
-use serde_json::json;
-use std::path::PathBuf;
+use serde_json::{json, Value};
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::{
     auth::AuthUser,
-    db::{record_audit_log, AppState},
+    db::{enqueue, record_audit_log, AppState},
+    error::{ApiError, ApiResult},
     models::{
-        GenerateSpeechRequest, GeneratedAudio, SpeechHistoryItem, SpeechJob, SpeechJobResponse,
-        SpeechWorkerJob, VoiceClone,
+        GenerateSpeechRequest, GeneratedAudio, SpeechHistoryItem, SpeechJob, SpeechJobResponse, SpeechWorkerJob,
+        VoiceClone, CLONE_COLUMNS,
     },
+    storage,
 };
+
+const MAX_TEXT_CHARS: usize = 5000;
 
 pub async fn generate_speech(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(body): Json<GenerateSpeechRequest>,
-) -> Result<Json<SpeechJobResponse>, (StatusCode, Json<serde_json::Value>)> {
+) -> ApiResult<SpeechJobResponse> {
     let text = body.text.trim();
     if text.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "message": "Text prompt cannot be empty" })),
-        ));
+        return Err(ApiError::bad_request("Text cannot be empty"));
+    }
+    if text.chars().count() > MAX_TEXT_CHARS {
+        return Err(ApiError::bad_request(format!("Text exceeds {MAX_TEXT_CHARS} characters")));
     }
 
-    if text.chars().count() > 5000 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "message": "Text prompt exceeds maximum 5000 characters" })),
-        ));
-    }
-
-    // Verify user owns the voice clone
-    let voice_clone: VoiceClone = sqlx::query_as!(
-        VoiceClone,
-        r#"
-        SELECT id, user_id, consent_id, sample_id, display_name, minimax_voice_id, status, created_at, deleted_at
-        FROM voice_clones
-        WHERE (minimax_voice_id = $1 OR id::text = $1) AND user_id = $2 AND deleted_at IS NULL
-        "#,
-        body.voice_id,
-        auth.user_id
-    )
+    let clone: VoiceClone = sqlx::query_as(&format!(
+        "SELECT {CLONE_COLUMNS} FROM voice_clones WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL"
+    ))
+    .bind(body.voice_clone_id)
+    .bind(auth.user_id)
     .fetch_optional(&state.db)
-    .await
-    .map_err(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": "Database query error" })))
-    })?
-    .ok_or_else(|| {
-        (StatusCode::FORBIDDEN, Json(json!({ "message": "Specified voice clone not found or unauthorized" })))
-    })?;
+    .await?
+    .ok_or_else(|| ApiError::not_found("Voice clone not found"))?;
+    if clone.status != "ready" {
+        return Err(ApiError::bad_request(format!("Voice is not ready yet (status: {})", clone.status)));
+    }
+
+    let sample_key: String = sqlx::query_scalar("SELECT storage_key FROM voice_samples WHERE id = $1")
+        .bind(clone.sample_id)
+        .fetch_one(&state.db)
+        .await?;
 
     let speed = body.speed.unwrap_or(1.0).clamp(0.5, 2.0);
     let volume = body.volume.unwrap_or(1.0).clamp(0.1, 2.0);
     let pitch = body.pitch.unwrap_or(0).clamp(-12, 12);
 
-    let job_id = Uuid::new_v4();
-
-    let job: SpeechJob = sqlx::query_as!(
-        SpeechJob,
-        r#"
-        INSERT INTO speech_jobs (id, user_id, voice_clone_id, text, speed, volume, pitch, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued')
-        RETURNING id, user_id, voice_clone_id, text, speed as "speed: f64", volume as "volume: f64", pitch, status, error_message, created_at
-        "#,
-        job_id,
-        auth.user_id,
-        voice_clone.id,
-        text,
-        bigdecimal::BigDecimal::try_from(speed).unwrap_or_default(),
-        bigdecimal::BigDecimal::try_from(volume).unwrap_or_default(),
-        pitch
+    let job: SpeechJob = sqlx::query_as(
+        "INSERT INTO speech_jobs (id, user_id, voice_clone_id, text, speed, volume, pitch, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued') RETURNING id, status, error_message",
     )
+    .bind(Uuid::new_v4())
+    .bind(auth.user_id)
+    .bind(clone.id)
+    .bind(text)
+    .bind(speed)
+    .bind(volume)
+    .bind(pitch)
     .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!("Failed to insert speech job: {:?}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": "Failed to create speech job" })))
-    })?;
+    .await?;
 
-    // Enqueue to Redis for Python worker
     let worker_job = SpeechWorkerJob {
         job_id: job.id,
         user_id: auth.user_id,
-        minimax_voice_id: voice_clone.minimax_voice_id,
+        engine: clone.engine.clone(),
+        voice_id: clone.voice_id.clone(),
+        provider_voice_id: clone.provider_voice_id.clone(),
+        sample_storage_path: sample_key,
         text: text.to_string(),
         speed,
         volume,
         pitch,
     };
-
-    if let Ok(mut con) = state.redis.get_multiplexed_async_connection().await {
-        let job_json = serde_json::to_string(&worker_job).unwrap_or_default();
-        let _: Result<(), _> = con.lpush("speech_jobs", job_json).await;
+    if let Err(e) = enqueue(&state.redis, "speech_jobs", &worker_job).await {
+        sqlx::query("UPDATE speech_jobs SET status = 'failed', error_message = 'Queue unavailable' WHERE id = $1")
+            .bind(job.id)
+            .execute(&state.db)
+            .await?;
+        tracing::error!("Failed to enqueue speech job: {e:?}");
+        return Err(ApiError::unavailable("Job queue is unavailable. Try again shortly."));
     }
 
     record_audit_log(
         &state.db,
         Some(auth.user_id),
         "speech_generation_queued",
-        json!({ "job_id": job.id, "char_count": text.len() }),
-        None,
+        json!({ "job_id": job.id, "engine": clone.engine, "chars": text.chars().count() }),
     )
     .await;
 
-    Ok(Json(SpeechJobResponse {
-        job_id: job.id,
-        status: job.status,
-        audio_url: None,
-    }))
+    Ok(Json(SpeechJobResponse { job_id: job.id, status: job.status, audio_url: None, error_message: None }))
 }
 
 pub async fn get_speech_job_status(
     auth: AuthUser,
     Path(job_id): Path<Uuid>,
     State(state): State<AppState>,
-) -> Result<Json<SpeechJobResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let job: SpeechJob = sqlx::query_as!(
-        SpeechJob,
-        r#"
-        SELECT id, user_id, voice_clone_id, text, speed as "speed: f64", volume as "volume: f64", pitch, status, error_message, created_at
-        FROM speech_jobs
-        WHERE id = $1 AND user_id = $2
-        "#,
-        job_id,
-        auth.user_id
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": "Database error" })))
-    })?
-    .ok_or_else(|| {
-        (StatusCode::NOT_FOUND, Json(json!({ "message": "Job not found" })))
-    })?;
+) -> ApiResult<SpeechJobResponse> {
+    let job: SpeechJob =
+        sqlx::query_as("SELECT id, status, error_message FROM speech_jobs WHERE id = $1 AND user_id = $2")
+            .bind(job_id)
+            .bind(auth.user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| ApiError::not_found("Job not found"))?;
 
     let audio_url = if job.status == "ready" {
-        let audio: Option<GeneratedAudio> = sqlx::query_as!(
-            GeneratedAudio,
-            r#"
-            SELECT id, speech_job_id, user_id, storage_key, duration_seconds as "duration_seconds: f64", file_size_bytes, created_at
-            FROM generated_audio
-            WHERE speech_job_id = $1
-            "#,
-            job.id
-        )
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-
-        audio.map(|a| format!("/api/audio/{}", a.id))
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM generated_audio WHERE speech_job_id = $1")
+            .bind(job.id)
+            .fetch_optional(&state.db)
+            .await?
+            .map(|id| format!("/api/audio/{id}"))
     } else {
         None
     };
 
-    Ok(Json(SpeechJobResponse {
-        job_id: job.id,
-        status: job.status,
-        audio_url,
-    }))
+    Ok(Json(SpeechJobResponse { job_id: job.id, status: job.status, audio_url, error_message: job.error_message }))
 }
 
-pub async fn get_speech_history(
-    auth: AuthUser,
-    State(state): State<AppState>,
-) -> Result<Json<Vec<SpeechHistoryItem>>, (StatusCode, Json<serde_json::Value>)> {
-    struct RawHistory {
-        id: Uuid,
-        speech_job_id: Uuid,
-        voice_id: String,
-        text: String,
-        duration_seconds: Option<f64>,
-        created_at: chrono::DateTime<chrono::Utc>,
-    }
-
-    let rows: Vec<RawHistory> = sqlx::query_as!(
-        RawHistory,
-        r#"
-        SELECT
-            ga.id as id,
-            ga.speech_job_id as speech_job_id,
-            vc.minimax_voice_id as voice_id,
-            sj.text as text,
-            ga.duration_seconds as "duration_seconds: f64",
-            ga.created_at as created_at
-        FROM generated_audio ga
-        JOIN speech_jobs sj ON ga.speech_job_id = sj.id
-        JOIN voice_clones vc ON sj.voice_clone_id = vc.id
-        WHERE ga.user_id = $1
-        ORDER BY ga.created_at DESC
-        LIMIT 50
-        "#,
-        auth.user_id
+pub async fn get_speech_history(auth: AuthUser, State(state): State<AppState>) -> ApiResult<Vec<SpeechHistoryItem>> {
+    let mut rows: Vec<SpeechHistoryItem> = sqlx::query_as(
+        "SELECT ga.id, ga.speech_job_id, vc.id AS voice_clone_id, vc.display_name AS voice_name,
+                vc.engine, sj.text, ga.duration_seconds, ga.created_at
+         FROM generated_audio ga
+         JOIN speech_jobs sj ON ga.speech_job_id = sj.id
+         JOIN voice_clones vc ON sj.voice_clone_id = vc.id
+         WHERE ga.user_id = $1
+         ORDER BY ga.created_at DESC
+         LIMIT 50",
     )
+    .bind(auth.user_id)
     .fetch_all(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!("Failed to fetch speech history: {:?}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": "Database query error" })))
-    })?;
-
-    let items = rows
-        .into_iter()
-        .map(|r| SpeechHistoryItem {
-            id: r.id,
-            speech_job_id: r.speech_job_id,
-            voice_id: r.voice_id,
-            text: r.text,
-            audio_url: format!("/api/audio/{}", r.id),
-            duration_seconds: r.duration_seconds,
-            created_at: r.created_at,
-        })
-        .collect();
-
-    Ok(Json(items))
+    .await?;
+    for r in &mut rows {
+        r.audio_url = format!("/api/audio/{}", r.id);
+    }
+    Ok(Json(rows))
 }
 
 pub async fn delete_generated_audio(
     auth: AuthUser,
     Path(audio_id): Path<Uuid>,
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let audio: Option<GeneratedAudio> = sqlx::query_as!(
-        GeneratedAudio,
-        r#"
-        SELECT id, speech_job_id, user_id, storage_key, duration_seconds as "duration_seconds: f64", file_size_bytes, created_at
-        FROM generated_audio
-        WHERE id = $1 AND user_id = $2
-        "#,
-        audio_id,
-        auth.user_id
+) -> ApiResult<Value> {
+    let audio: GeneratedAudio = sqlx::query_as(
+        "DELETE FROM generated_audio WHERE id = $1 AND user_id = $2 RETURNING id, storage_key, mime_type",
     )
+    .bind(audio_id)
+    .bind(auth.user_id)
     .fetch_optional(&state.db)
-    .await
-    .map_err(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": "Database error" })))
-    })?;
+    .await?
+    .ok_or_else(|| ApiError::not_found("Audio not found"))?;
 
-    if let Some(record) = audio {
-        // Delete physical file if exists
-        let path = PathBuf::from(&state.config.storage_dir).join(&record.storage_key);
-        let _ = tokio::fs::remove_file(path).await;
-
-        let _ = sqlx::query!("DELETE FROM generated_audio WHERE id = $1", audio_id)
-            .execute(&state.db)
-            .await;
-
-        record_audit_log(
-            &state.db,
-            Some(auth.user_id),
-            "generated_audio_deleted",
-            json!({ "audio_id": audio_id }),
-            None,
-        )
-        .await;
-    }
-
-    Ok(Json(json!({ "message": "Generated audio removed" })))
+    let _ = tokio::fs::remove_file(storage::resolve(&state.config.storage_dir, &audio.storage_key)).await;
+    record_audit_log(&state.db, Some(auth.user_id), "generated_audio_deleted", json!({ "audio_id": audio.id })).await;
+    Ok(Json(json!({ "message": "Audio deleted" })))
 }
 
+/// Streams a generated clip to its owner only. The dashboard fetches it with the
+/// Authorization header and plays it from a blob URL.
 pub async fn stream_audio(
+    auth: AuthUser,
     Path(audio_id): Path<Uuid>,
     State(state): State<AppState>,
-) -> Result<Response, StatusCode> {
-    let audio: GeneratedAudio = sqlx::query_as!(
-        GeneratedAudio,
-        r#"
-        SELECT id, speech_job_id, user_id, storage_key, duration_seconds as "duration_seconds: f64", file_size_bytes, created_at
-        FROM generated_audio
-        WHERE id = $1
-        "#,
-        audio_id
+) -> Result<Response, ApiError> {
+    let audio: GeneratedAudio =
+        sqlx::query_as("SELECT id, storage_key, mime_type FROM generated_audio WHERE id = $1 AND user_id = $2")
+            .bind(audio_id)
+            .bind(auth.user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| ApiError::not_found("Audio not found"))?;
+
+    let path = storage::resolve(&state.config.storage_dir, &audio.storage_key);
+    let file = File::open(&path).await.map_err(|_| ApiError::not_found("Audio file missing"))?;
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_string();
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, audio.mime_type),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("inline; filename=\"ai_generated_{audio_id}.{ext}\""),
+            ),
+            (header::CACHE_CONTROL, "private, no-store".to_string()),
+        ],
+        Body::from_stream(ReaderStream::new(file)),
     )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .ok_or(StatusCode::NOT_FOUND)?;
-
-    let path = PathBuf::from(&state.config.storage_dir).join(&audio.storage_key);
-    let file = File::open(&path).await.map_err(|_| StatusCode::NOT_FOUND)?;
-
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
-    let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, "audio/mpeg".parse().unwrap());
-    headers.insert(
-        header::CONTENT_DISPOSITION,
-        format!("inline; filename=\"synthesized_{}.mp3\"", audio_id)
-            .parse()
-            .unwrap(),
-    );
-
-    Ok((headers, body).into_response())
+        .into_response())
 }

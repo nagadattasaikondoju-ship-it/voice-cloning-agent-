@@ -1750,3 +1750,26 @@ body.dashboard-body {
 }
 
 
+
+/* ---- Consent verification result & engine status (Rust API integration) ---- */
+.consent-verify-result {
+  margin: 16px 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.consent-verify-result.success { border-color: rgba(16, 185, 129, 0.5); background: rgba(16, 185, 129, 0.08); }
+.consent-verify-result.error { border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.08); }
+.consent-verify-result .transcript { display: block; margin-top: 6px; color: #94a3b8; font-style: italic; }
+.engine-status-list { display: grid; gap: 10px; margin-top: 12px; }
+.engine-status-item {
+  display: flex; justify-content: space-between; gap: 12px; align-items: flex-start;
+  padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.engine-status-item p { margin: 4px 0 0; font-size: 12px; color: #94a3b8; }
+.voice-error { font-size: 12px; color: #f87171; margin-top: 6px; }
+.engine-tag { font-size: 11px; color: #a5b4fc; margin-left: 6px; }
+.text-danger { color: #f87171; }

@@ -5,58 +5,75 @@ pub struct Config {
     pub database_url: String,
     pub redis_url: String,
     pub jwt_secret: String,
-    pub minimax_api_key: String,
-    pub minimax_base_url: String,
     pub storage_dir: String,
     pub allowed_origins: Vec<String>,
     pub port: u16,
+    /// Base URL of the speech_pipeline service (Whisper STT) used to verify spoken consent.
+    pub speech_pipeline_url: String,
+    /// Minimum word-level similarity (0..1) between the consent phrase and the transcript.
+    pub consent_match_threshold: f64,
+    pub consent_max_attempts: i32,
+    /// Engines are offered to users only when their worker credentials are configured.
+    pub minimax_enabled: bool,
+    pub elevenlabs_enabled: bool,
+    pub f5_enabled: bool,
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    env::var(key).ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| default.to_string())
+}
+
+fn has_real_key(key: &str) -> bool {
+    env::var(key)
+        .map(|v| {
+            let v = v.trim();
+            !v.is_empty() && !v.starts_with("your_") && !v.starts_with("mock_")
+        })
+        .unwrap_or(false)
 }
 
 impl Config {
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
 
-        let database_url = env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgresql://postgres:postgres@localhost:5432/voiceclone".to_string());
+        let jwt_secret = env::var("JWT_SECRET").unwrap_or_default();
+        if jwt_secret.len() < 32 {
+            panic!(
+                "JWT_SECRET must be set to a random value of at least 32 characters \
+                 (generate one with: openssl rand -hex 32)"
+            );
+        }
 
-        let redis_url = env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://localhost:6379/0".to_string());
-
-        let jwt_secret = env::var("JWT_SECRET")
-            .unwrap_or_else(|_| "super_secret_jwt_key_intelligence_evolve_2026".to_string());
-
-        let minimax_api_key = env::var("MINIMAX_API_KEY")
-            .unwrap_or_else(|_| "mock_or_env_injected_minimax_key".to_string());
-
-        let minimax_base_url = env::var("MINIMAX_BASE_URL")
-            .unwrap_or_else(|_| "https://api.minimax.io/v1".to_string());
-
-        let storage_dir = env::var("STORAGE_DIR")
-            .unwrap_or_else(|_| "./private_storage".to_string());
-
-        let allowed_origins_raw = env::var("ALLOWED_ORIGINS")
-            .unwrap_or_else(|_| "http://localhost:5500,http://127.0.0.1:5500,http://localhost:3000".to_string());
-
-        let allowed_origins = allowed_origins_raw
+        let allowed_origins = env_or("ALLOWED_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500")
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
 
-        let port = env::var("PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(8080);
-
         Config {
-            database_url,
-            redis_url,
+            database_url: env_or("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/voiceclone"),
+            redis_url: env_or("REDIS_URL", "redis://localhost:6379/0"),
             jwt_secret,
-            minimax_api_key,
-            minimax_base_url,
-            storage_dir,
+            storage_dir: env_or("STORAGE_DIR", "./private_storage"),
             allowed_origins,
-            port,
+            port: env_or("PORT", "8080").parse().unwrap_or(8080),
+            speech_pipeline_url: env_or("SPEECH_PIPELINE_URL", "http://localhost:8000")
+                .trim_end_matches('/')
+                .to_string(),
+            consent_match_threshold: env_or("CONSENT_MATCH_THRESHOLD", "0.75").parse().unwrap_or(0.75),
+            consent_max_attempts: env_or("CONSENT_MAX_ATTEMPTS", "5").parse().unwrap_or(5),
+            minimax_enabled: has_real_key("MINIMAX_API_KEY"),
+            elevenlabs_enabled: has_real_key("ELEVENLABS_API_KEY"),
+            f5_enabled: env_or("F5_TTS_ENABLED", "true") == "true",
+        }
+    }
+
+    pub fn engine_enabled(&self, engine: &str) -> bool {
+        match engine {
+            "minimax" => self.minimax_enabled,
+            "elevenlabs" => self.elevenlabs_enabled,
+            "f5" => self.f5_enabled,
+            _ => false,
         }
     }
 }

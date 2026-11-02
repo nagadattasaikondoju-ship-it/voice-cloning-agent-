@@ -4,9 +4,18 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-const PORT = 5500;
-const ROOT = path.resolve(__dirname);
-const UPLOADS_DIR = path.join(ROOT, "uploads");
+/**
+ * LOCAL DEMO ONLY — not the production backend.
+ *
+ * In-memory, no real authentication, no server-side consent enforcement.
+ * The real stack is backend-rust + worker-python + speech_pipeline (see README).
+ * Serves a frozen copy of the original dashboard from ./public on 127.0.0.1 only.
+ */
+const PORT = Number(process.env.DEMO_PORT || 5600);
+const HOST = "127.0.0.1";
+const PUBLIC_DIR = path.join(__dirname, "public");
+const REPO_ROOT = path.resolve(__dirname, "..");
+const UPLOADS_DIR = path.join(__dirname, "uploads");
 
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -605,11 +614,13 @@ const server = http.createServer(async (req, res) => {
   // Static File Serving
   // =========================================================================
   let reqPath = decodeURI(pathname);
-  if (reqPath === "/") reqPath = "/index.html";
+  if (reqPath === "/") reqPath = "/dashboard.html";
 
-  const filePath = path.join(ROOT, reqPath);
+  // Shared brand assets come from the repo; everything else from ./public
+  const baseDir = reqPath.startsWith("/assets/") || reqPath.startsWith("/fonts/") ? REPO_ROOT : PUBLIC_DIR;
+  const filePath = path.join(baseDir, reqPath);
 
-  if (!filePath.startsWith(ROOT)) {
+  if (!filePath.startsWith(baseDir + path.sep)) {
     res.writeHead(403);
     res.end("Forbidden");
     return;
@@ -636,6 +647,6 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`[Server] Free AI Voice Studio active at http://localhost:${PORT}/ (Powered by Hugging Face F5-TTS)`);
+server.listen(PORT, HOST, () => {
+  console.log(`[Demo] LOCAL DEMO ONLY (no auth, in-memory) at http://localhost:${PORT}/`);
 });
