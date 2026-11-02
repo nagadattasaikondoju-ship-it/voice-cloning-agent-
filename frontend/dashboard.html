@@ -3,17 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Voice Studio | Intelligence Designed To Evolve</title>
-
-  <!-- Google Fonts: Inter 400, 500, 600, 700 -->
+  <title>Voice Studio | Intelligence</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-
-  <!-- BubbledotICG-FinePos from OnlineWebFonts -->
-  <link href="https://db.onlinewebfonts.com/c/8cb707a9b8a73f8a7403336b861c3074?family=BubbledotICG-FinePos" rel="stylesheet" />
-
-  <!-- Font Awesome 6.5.2 -->
   <link
     rel="stylesheet"
     href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
@@ -21,653 +14,144 @@
     crossorigin="anonymous"
     referrerpolicy="no-referrer"
   />
-
   <link rel="stylesheet" href="dashboard.css" />
 </head>
-<body class="dashboard-body">
-  <!-- Top App Navigation -->
-  <header class="app-header">
-    <div class="header-left">
-      <a href="../index.html" class="app-logo" aria-label="Landing Page">
-        <img src="../assets/logo.webp" alt="" width="40" height="40" class="logo-thumb" />
-        <span class="app-brand-name">Intelligence</span>
-      </a>
-      <span class="badge-env">Voice Studio</span>
-    </div>
-
-    <nav class="app-nav">
-      <button class="nav-tab-btn active" data-tab="overview">
-        <i class="fa-solid fa-chart-pie"></i> Overview
-      </button>
-      <button class="nav-tab-btn" data-tab="voice-studio">
-        <i class="fa-solid fa-microphone-lines"></i> Voice Studio
-      </button>
-      <button class="nav-tab-btn" data-tab="speech-studio">
-        <i class="fa-solid fa-waveform-lines"></i> Text to Speech
-      </button>
-      <button class="nav-tab-btn" data-tab="settings">
-        <i class="fa-solid fa-sliders"></i> Settings
-      </button>
+<body>
+  <header class="topbar">
+    <a href="../index.html" class="brand" aria-label="Home">
+      <img src="../assets/logo.webp" alt="" width="34" height="34" />
+      <span>Intelligence</span>
+    </a>
+    <nav class="tabs" aria-label="Sections">
+      <button class="tab active" data-tab="voices"><i class="fa-solid fa-microphone-lines"></i> Voices</button>
+      <button class="tab" data-tab="speak"><i class="fa-solid fa-wave-square"></i> Speak</button>
     </nav>
-
-    <div class="header-right">
-      <div class="user-pill" id="user-profile-badge">
-        <div class="user-avatar" id="user-avatar-initial">U</div>
-        <span class="user-email" id="header-user-email">user@intelligence.ai</span>
-      </div>
-      <button class="btn-logout" id="btn-logout-header" title="Sign Out">
-        <i class="fa-solid fa-right-from-bracket"></i>
-      </button>
+    <div class="topbar-right">
+      <span class="engine-pill" id="engine-pill" title="Voice engine status"><span class="dot"></span><span id="engine-text">Checking…</span></span>
+      <span class="user-email" id="user-email"></span>
+      <button class="icon-btn" id="btn-logout" title="Sign out" aria-label="Sign out"><i class="fa-solid fa-right-from-bracket"></i></button>
     </div>
   </header>
 
-  <!-- Mobile Bottom Tab Bar -->
-  <nav class="mobile-tab-bar">
-    <button class="mobile-tab active" data-tab="overview">
-      <i class="fa-solid fa-chart-pie"></i>
-      <span>Overview</span>
-    </button>
-    <button class="mobile-tab" data-tab="voice-studio">
-      <i class="fa-solid fa-microphone-lines"></i>
-      <span>Voices</span>
-    </button>
-    <button class="mobile-tab" data-tab="speech-studio">
-      <i class="fa-solid fa-waveform-lines"></i>
-      <span>TTS</span>
-    </button>
-    <button class="mobile-tab" data-tab="settings">
-      <i class="fa-solid fa-sliders"></i>
-      <span>Settings</span>
-    </button>
-  </nav>
+  <div class="engine-alert" id="engine-alert" hidden></div>
 
-  <!-- Toast Notification Container -->
-  <div id="toast-container" class="toast-container" aria-live="polite"></div>
-
-  <!-- Main Content Layout -->
-  <main class="app-main">
-
-    <!-- Voice engine status (filled from GET /api/engine) -->
-    <div id="free-cloning-banner" class="balance-banner free-active-banner">
-      <div class="banner-icon banner-icon-success">
-        <i class="fa-solid fa-wand-magic-sparkles"></i>
-      </div>
-      <div class="banner-content">
-        <div class="banner-title">
-          <span>Consent-verified voice cloning</span>
-          <span class="badge-success" id="engine-banner-badge">Checking voice engine…</span>
+  <main class="page">
+    <!-- ============================ VOICES ============================ -->
+    <section class="view active" id="view-voices">
+      <div class="card">
+        <div class="card-head">
+          <h2>Create a voice</h2>
+          <ol class="steps" aria-label="Progress">
+            <li class="active" data-step="1">Sample</li>
+            <li data-step="2">Consent</li>
+            <li data-step="3">Name</li>
+          </ol>
         </div>
-        <div class="banner-desc" id="engine-banner-desc">
-          Every clone requires a spoken consent phrase that is transcribed by Whisper and matched on the server.
+
+        <!-- Step 1: sample -->
+        <div class="step active" id="step-1">
+          <p class="muted">Record or upload <strong>10–30 seconds</strong> of your own voice: clear speech, quiet room, no music.</p>
+          <div class="row">
+            <button class="btn btn-record" id="btn-record-sample" type="button"><span class="rec-dot"></span><span class="label">Record</span> <span class="timer">00:00</span></button>
+            <span class="muted">or</span>
+            <label class="btn btn-ghost" for="sample-file"><i class="fa-solid fa-upload"></i> Upload audio</label>
+            <input type="file" id="sample-file" accept="audio/*,.mp3,.m4a,.wav,.webm,.ogg" hidden />
+          </div>
+          <div class="meter"><div id="sample-meter"></div></div>
+          <div class="preview" id="sample-preview" hidden>
+            <audio controls id="sample-audio"></audio>
+            <span class="muted" id="sample-info"></span>
+          </div>
+          <div class="actions"><button class="btn btn-primary" id="btn-step-1" disabled>Next <i class="fa-solid fa-arrow-right"></i></button></div>
         </div>
-      </div>
-      <div class="banner-actions">
-        <button type="button" class="pill-btn pill-btn-primary pill-btn-sm" onclick="switchTab('voice-studio')">
-          <i class="fa-solid fa-microphone"></i> Clone My Voice
-        </button>
-      </div>
-    </div>
 
-    <!-- =========================================================================
-         TAB 1: OVERVIEW
-         ========================================================================= -->
-    <section id="tab-overview" class="tab-pane active">
-      <div class="view-header">
-        <h1 class="view-title">Studio Dashboard</h1>
-        <p class="view-subtitle">Clone your own voice with verified consent and generate speech from text.</p>
-      </div>
-
-      <!-- Quick Metrics Grid -->
-      <div class="metrics-grid">
-        <div class="metric-card">
-          <div class="metric-icon-wrap">&lt;</div>
-          <div class="metric-data">
-            <span class="metric-num" id="metric-voice-count">0</span>
-            <span class="metric-title">Cloned Voices</span>
+        <!-- Step 2: spoken consent -->
+        <div class="step" id="step-2">
+          <p class="muted">Read this sentence aloud. The server transcribes it and only allows cloning if it matches.</p>
+          <blockquote class="phrase" id="consent-phrase">Loading…</blockquote>
+          <div class="row">
+            <button class="btn btn-record" id="btn-record-consent" type="button"><span class="rec-dot"></span><span class="label">Record phrase</span> <span class="timer">00:00</span></button>
+            <button class="btn btn-ghost" id="btn-new-phrase" type="button"><i class="fa-solid fa-rotate"></i> New phrase</button>
+          </div>
+          <div class="meter"><div id="consent-meter"></div></div>
+          <div class="preview" id="consent-preview" hidden><audio controls id="consent-audio"></audio></div>
+          <label class="check"><input type="checkbox" id="consent-check" /> <span>This is my own voice and I agree to create a private clone of it for this account.</span></label>
+          <div class="result" id="consent-result" hidden></div>
+          <div class="actions">
+            <button class="btn btn-ghost" data-back="1"><i class="fa-solid fa-arrow-left"></i> Back</button>
+            <button class="btn btn-primary" id="btn-step-2" disabled>Verify <i class="fa-solid fa-arrow-right"></i></button>
           </div>
         </div>
-        <div class="metric-card">
-          <div class="metric-icon-wrap">%</div>
-          <div class="metric-data">
-            <span class="metric-num" id="metric-audio-count">0</span>
-            <span class="metric-title">Speech Syntheses</span>
+
+        <!-- Step 3: name -->
+        <form class="step" id="step-3">
+          <label class="field">Voice name <input type="text" id="voice-name" maxlength="80" placeholder="e.g. My narration voice" required /></label>
+          <div class="actions">
+            <button class="btn btn-ghost" type="button" data-back="2"><i class="fa-solid fa-arrow-left"></i> Back</button>
+            <button class="btn btn-primary" id="btn-create" type="submit"><i class="fa-solid fa-wand-magic-sparkles"></i> Create voice</button>
           </div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-icon-wrap">*</div>
-          <div class="metric-data">
-            <span class="metric-num" id="metric-consent-status">—</span>
-            <span class="metric-title">Verified Consents</span>
-          </div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-icon-wrap">#</div>
-          <div class="metric-data">
-            <span class="metric-num" id="metric-model-name">—</span>
-            <span class="metric-title">Voice Engine</span>
-          </div>
-        </div>
+        </form>
       </div>
 
-      <!-- Quick Action Cards -->
-      <div class="cards-split-row">
-        <div class="action-card">
-          <div class="card-glow"></div>
-          <div class="action-card-header">
-            <i class="fa-solid fa-microphone fa-2x"></i>
-            <h3>Clone Your Voice</h3>
-          </div>
-          <p>Record a 10s–5m voice sample with authentic spoken consent to deploy a private AI voice clone.</p>
-          <button class="pill-btn pill-btn-primary" onclick="switchTab('voice-studio')">
-            Open Voice Studio <i class="fa-solid fa-arrow-right"></i>
-          </button>
+      <div class="card">
+        <div class="card-head">
+          <h2>Your voices</h2>
+          <button class="icon-btn" id="btn-refresh-voices" title="Refresh" aria-label="Refresh voices"><i class="fa-solid fa-rotate"></i></button>
         </div>
-
-        <div class="action-card">
-          <div class="card-glow"></div>
-          <div class="action-card-header">
-            <i class="fa-solid fa-wand-magic-sparkles fa-2x"></i>
-            <h3>Synthesize Audio</h3>
-          </div>
-          <p>Generate lifelike MP3 speech from text with adjustable speed and volume.</p>
-          <button class="pill-btn pill-btn-white" onclick="switchTab('speech-studio')">
-            Open TTS Studio <i class="fa-solid fa-arrow-right"></i>
-          </button>
-        </div>
-      </div>
-
-      <!-- Recent Generations Table -->
-      <div class="section-card">
-        <div class="section-card-header">
-          <h3><i class="fa-solid fa-clock-rotate-left"></i> Recent Audio Syntheses</h3>
-          <button class="btn-text-link" onclick="switchTab('speech-studio')">View All</button>
-        </div>
-        <div id="overview-recent-list" class="recent-list">
-          <div class="empty-state">
-            <i class="fa-solid fa-headphones fa-2x"></i>
-            <p>No audio synthesized yet. Go to Text-to-Speech to generate your first clip.</p>
-          </div>
-        </div>
+        <ul class="list" id="voice-list"></ul>
       </div>
     </section>
 
-    <!-- =========================================================================
-         TAB 2: VOICE STUDIO (Onboarding, Consent & Cloning)
-         ========================================================================= -->
-    <section id="tab-voice-studio" class="tab-pane">
-      <div class="view-header">
-        <h1 class="view-title">Voice Onboarding & Cloning</h1>
-        <p class="view-subtitle">Upload a sample, verify spoken consent, and create your voice model.</p>
+    <!-- ============================ SPEAK ============================ -->
+    <section class="view" id="view-speak">
+      <form class="card" id="speak-form">
+        <div class="card-head"><h2>Generate speech</h2></div>
+        <label class="field">Voice <select id="voice-select" required></select></label>
+        <label class="field">
+          <span class="field-head">Script <span class="muted" id="char-count">0 / 5000</span></span>
+          <textarea id="script" rows="7" maxlength="5000" placeholder="Type what your voice should say…" required></textarea>
+        </label>
+        <div class="row">
+          <button class="btn btn-ghost btn-sm" type="button" id="btn-load-script"><i class="fa-solid fa-file-import"></i> Load script or audio</button>
+          <input type="file" id="script-file" accept=".txt,.md,.srt,.vtt,audio/*,.mp3,.m4a,.wav,.webm,.ogg" hidden />
+          <span class="muted small">Text files load as-is; audio is transcribed.</span>
+        </div>
+        <div class="sliders">
+          <label class="field"><span class="field-head">Speed <output id="speed-out">1.0×</output></span><input type="range" id="speed" min="0.5" max="2" step="0.1" value="1" /></label>
+          <label class="field"><span class="field-head">Volume <output id="volume-out">1.0</output></span><input type="range" id="volume" min="0.1" max="2" step="0.1" value="1" /></label>
+        </div>
+        <div class="actions"><button class="btn btn-primary" id="btn-generate" type="submit"><i class="fa-solid fa-play"></i> Generate</button></div>
+      </form>
+
+      <div class="card player" id="player" hidden>
+        <div class="card-head"><h2 id="player-title">Result</h2><span class="muted small">AI-generated</span></div>
+        <audio controls id="player-audio"></audio>
+        <div class="row"><a class="btn btn-ghost btn-sm" id="player-download" download><i class="fa-solid fa-download"></i> Download MP3</a></div>
       </div>
 
-      <!-- Step Navigation Stepper -->
-      <div class="stepper-bar">
-        <div class="step-node active" id="step-node-1">
-          <span class="step-num">1</span>
-          <span class="step-label">Audio Sample</span>
+      <div class="card">
+        <div class="card-head">
+          <h2>History</h2>
+          <button class="btn btn-ghost btn-sm" id="btn-clear-history" type="button"><i class="fa-solid fa-trash"></i> Delete all</button>
         </div>
-        <div class="step-line" id="step-line-1"></div>
-        <div class="step-node" id="step-node-2">
-          <span class="step-num">2</span>
-          <span class="step-label">Spoken Consent</span>
-        </div>
-        <div class="step-line" id="step-line-2"></div>
-        <div class="step-node" id="step-node-3">
-          <span class="step-num">3</span>
-          <span class="step-label">Voice Model</span>
-        </div>
-      </div>
-
-      <!-- STEP 1: AUDIO SAMPLE -->
-      <div class="studio-step-content active" id="studio-step-1">
-        <div class="step-box">
-          <div class="step-box-header">
-            <h3><i class="fa-solid fa-file-audio"></i> Step 1: Provide Source Voice Sample</h3>
-            <span class="badge-tag">10s – 5min • Max 20MB</span>
-          </div>
-          <p class="step-desc">
-            Provide a clear recording of your voice. Supported formats: MP3, M4A, WAV. For best results, speak naturally in a quiet room.
-          </p>
-
-          <div class="upload-methods-grid">
-            <!-- Method A: Microphone Live Record -->
-            <div class="method-card">
-              <h4><i class="fa-solid fa-microphone"></i> Record in Browser</h4>
-              <p>Record directly via your device microphone.</p>
-              
-              <div class="recorder-controls">
-                <button class="record-btn" id="btn-record-sample" type="button">
-                  <span class="record-dot"></span>
-                  <span id="record-sample-label">Start Recording</span>
-                </button>
-                <span class="recorder-timer" id="sample-timer">00:00</span>
-              </div>
-
-              <!-- Live visualizer level bar -->
-              <div class="meter-container">
-                <div class="meter-bar" id="sample-level-meter"></div>
-              </div>
-
-              <div id="sample-record-preview-wrap" class="audio-preview-wrap" hidden>
-                <audio id="sample-record-audio" controls class="custom-audio"></audio>
-                <span class="audio-meta" id="sample-record-meta"></span>
-              </div>
-            </div>
-
-            <!-- Method B: Upload Audio File -->
-            <div class="method-card">
-              <h4><i class="fa-solid fa-cloud-arrow-up"></i> Upload Audio File</h4>
-              <p>Drag and drop or select an MP3, M4A, or WAV file.</p>
-
-              <div class="drop-zone" id="sample-drop-zone">
-                <i class="fa-solid fa-file-arrow-up fa-3x"></i>
-                <p>Drag audio file here or <span class="browse-link">browse</span></p>
-                <input type="file" id="sample-file-input" accept=".mp3,.m4a,.wav,.webm,.ogg,audio/*" hidden />
-                <span class="drop-hint">MP3, M4A, WAV (10s – 5 mins, max 20MB)</span>
-              </div>
-
-              <div id="sample-upload-preview-wrap" class="audio-preview-wrap" hidden>
-                <div class="file-info-badge">
-                  <i class="fa-solid fa-check-circle"></i>
-                  <span id="sample-upload-filename">audio.mp3</span>
-                  <span id="sample-upload-filesize" class="badge-size">2.4 MB</span>
-                </div>
-                <audio id="sample-upload-audio" controls class="custom-audio"></audio>
-              </div>
-            </div>
-          </div>
-
-          <div class="quality-guidelines">
-            <h4><i class="fa-solid fa-circle-info"></i> Audio Quality Guidelines</h4>
-            <ul>
-              <li><i class="fa-solid fa-check"></i> <strong>Duration:</strong> 10 to 60 seconds of clear speech (minimum 5 s, maximum 5 min, 20 MB).</li>
-              <li><i class="fa-solid fa-check"></i> <strong>Acoustics:</strong> Minimize echo, background noise, or background music.</li>
-              <li><i class="fa-solid fa-check"></i> <strong>Delivery:</strong> Speak naturally with clear pronunciation and steady volume.</li>
-            </ul>
-          </div>
-
-          <div class="step-footer">
-            <div></div>
-            <button class="pill-btn pill-btn-primary" id="btn-next-step-1">
-              Proceed to Consent Verification <i class="fa-solid fa-arrow-right"></i>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- STEP 2: CONSENT VERIFICATION -->
-      <div class="studio-step-content" id="studio-step-2">
-        <div class="step-box">
-          <div class="step-box-header">
-            <h3><i class="fa-solid fa-shield-halved"></i> Step 2: Spoken Consent Verification</h3>
-            <span class="badge-tag badge-security">Strict Authentication</span>
-          </div>
-          <p class="step-desc">
-            To prevent unauthorized cloning, record yourself reading the phrase below. The server transcribes your recording with Whisper and only unlocks cloning if it matches.
-          </p>
-
-          <div class="consent-phrase-box">
-            <span class="phrase-label">Please read aloud clearly:</span>
-            <blockquote class="consent-phrase-text" id="consent-phrase-display">Loading a verification phrase…</blockquote>
-            <button class="btn-refresh-phrase" id="btn-regenerate-phrase" title="Generate new phrase">
-              <i class="fa-solid fa-arrows-rotate"></i> New Phrase
-            </button>
-          </div>
-
-          <!-- Consent Recording Controls -->
-          <div class="consent-recording-card">
-            <h4><i class="fa-solid fa-microphone-lines"></i> Record Spoken Consent</h4>
-            <div class="recorder-controls">
-              <button class="record-btn" id="btn-record-consent" type="button">
-                <span class="record-dot"></span>
-                <span id="record-consent-label">Record Verification Phrase</span>
-              </button>
-              <span class="recorder-timer" id="consent-timer">00:00</span>
-            </div>
-
-            <div class="meter-container">
-              <div class="meter-bar" id="consent-level-meter"></div>
-            </div>
-
-            <div id="consent-audio-preview-wrap" class="audio-preview-wrap" hidden>
-              <audio id="consent-audio-playback" controls class="custom-audio"></audio>
-              <span class="audio-meta" id="consent-audio-meta"></span>
-            </div>
-          </div>
-
-          <div id="consent-verify-result" class="consent-verify-result" hidden></div>
-
-          <!-- Legal Confirmation Checkbox -->
-          <div class="consent-agreement">
-            <label class="checkbox-container">
-              <input type="checkbox" id="consent-checkbox" />
-              <span class="checkmark"></span>
-              <span class="checkbox-label">I confirm this is my own voice, and I authorize the creation of a private synthetic voice model from it for use only on this account.</span>
-            </label>
-          </div>
-
-          <div class="step-footer">
-            <button class="pill-btn pill-btn-ghost" id="btn-back-step-2">
-              <i class="fa-solid fa-arrow-left"></i> Back
-            </button>
-            <button class="pill-btn pill-btn-primary" id="btn-next-step-2" disabled>
-              <span id="btn-next-step-2-label">Verify with Whisper &amp; Continue</span> <i class="fa-solid fa-arrow-right"></i>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- STEP 3: CONFIGURE & SUBMIT CLONE JOB -->
-      <div class="studio-step-content" id="studio-step-3">
-        <div class="step-box">
-          <div class="step-box-header">
-            <h3><i class="fa-solid fa-dna"></i> Step 3: Create Voice Model</h3>
-            <span class="badge-tag" id="step3-engine-badge">Chatterbox (local)</span>
-          </div>
-          <p class="step-desc">
-            Name your voice. It is prepared in the background in a few seconds; you can watch its status below.
-          </p>
-
-          <form id="form-clone-voice" class="clone-config-form">
-            <div class="form-group">
-              <label for="clone-display-name">Voice Name</label>
-              <input type="text" id="clone-display-name" class="input-dark" placeholder="e.g., My Narrative Voice" required />
-              <span class="input-hint">A human-readable label for your dashboard selector.</span>
-            </div>
-
-
-            <div class="clone-summary-card">
-              <h4>Review Submission</h4>
-              <div class="summary-item">
-                <span>Verified Audio Sample:</span>
-                <strong id="summary-sample-name">Ready (Verified)</strong>
-              </div>
-              <div class="summary-item">
-                <span>Spoken Consent:</span>
-                <strong id="summary-consent-status">Not verified</strong>
-              </div>
-              <div class="summary-item">
-                <span>Engine:</span>
-                <strong id="summary-engine-name">—</strong>
-              </div>
-            </div>
-
-            <div class="step-footer">
-              <button type="button" class="pill-btn pill-btn-ghost" id="btn-back-step-3">
-                <i class="fa-solid fa-arrow-left"></i> Back
-              </button>
-              <button type="submit" class="pill-btn pill-btn-primary" id="btn-submit-clone">
-                <i class="fa-solid fa-bolt"></i> Start Voice Cloning
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <!-- Active Cloned Voices List & Job Monitor -->
-      <div class="section-card mt-30">
-        <div class="section-card-header">
-          <h3><i class="fa-solid fa-layer-group"></i> Your Cloned Voices</h3>
-          <button class="btn-refresh" id="btn-refresh-voices" title="Refresh list">
-            <i class="fa-solid fa-rotate"></i>
-          </button>
-        </div>
-        <div id="cloned-voices-list" class="voice-cards-grid">
-          <!-- Populated by JS -->
-          <div class="empty-state">
-            <i class="fa-solid fa-microphone-slash fa-2x"></i>
-            <p>No cloned voices yet. Complete the steps above to clone your voice.</p>
-          </div>
-        </div>
+        <ul class="list" id="history-list"></ul>
       </div>
     </section>
-
-    <!-- =========================================================================
-         TAB 3: TEXT TO SPEECH STUDIO
-         ========================================================================= -->
-    <section id="tab-speech-studio" class="tab-pane">
-      <div class="view-header">
-        <h1 class="view-title">Speech Synthesis Studio</h1>
-        <p class="view-subtitle">Generate speech with one of your ready voice models.</p>
-      </div>
-
-      <div class="tts-grid">
-        <!-- Left: Speech Input & Controls -->
-        <div class="tts-editor-card">
-          <form id="form-generate-speech">
-            <div class="form-group">
-              <label for="tts-voice-select">Select Cloned Voice</label>
-              <select id="tts-voice-select" class="input-dark select-custom" required>
-                <option value="" disabled selected>-- Choose one of your cloned voices --</option>
-              </select>
-            </div>
-
-            <div class="form-group">
-              <div class="textarea-header">
-                <label for="tts-text-input">Speech Script</label>
-                <span class="char-counter" id="tts-char-counter">0 / 5000</span>
-              </div>
-              <textarea
-                id="tts-text-input"
-                class="input-dark tts-textarea"
-                rows="7"
-                placeholder="Enter the text to speak in your cloned voice…"
-                maxlength="5000"
-                required
-              ></textarea>
-              <div class="script-import">
-                <button type="button" class="pill-btn pill-btn-ghost pill-btn-sm" id="btn-import-script">
-                  <i class="fa-solid fa-file-lines"></i> Load script or audio
-                </button>
-                <input type="file" id="script-file-input" accept=".txt,.md,.srt,.vtt,audio/*,.mp3,.m4a,.wav,.webm,.ogg" hidden />
-                <span class="input-hint" id="script-import-hint">Text files (.txt, .md, .srt, .vtt) load directly; audio is transcribed with Whisper so you can re-voice it.</span>
-              </div>
-            </div>
-
-            <!-- Voice Controls (Speed, Volume, Pitch) -->
-            <div class="sliders-grid">
-              <div class="slider-group">
-                <div class="slider-header">
-                  <span>Speed</span>
-                  <span class="slider-val" id="val-speed">1.0x</span>
-                </div>
-                <input type="range" id="slider-speed" min="0.5" max="2.0" step="0.1" value="1.0" class="custom-range" />
-              </div>
-
-              <div class="slider-group">
-                <div class="slider-header">
-                  <span>Volume</span>
-                  <span class="slider-val" id="val-volume">1.0</span>
-                </div>
-                <input type="range" id="slider-volume" min="0.1" max="2.0" step="0.1" value="1.0" class="custom-range" />
-              </div>
-            </div>
-
-            <div class="tts-actions">
-              <div class="ai-disclosure-badge">
-                <i class="fa-solid fa-water"></i> Watermarked with AI-generated audio disclosure
-              </div>
-              <button type="submit" class="pill-btn pill-btn-primary" id="btn-generate-speech">
-                <i class="fa-solid fa-waveform"></i> Generate Speech (MP3)
-              </button>
-            </div>
-          </form>
-        </div>
-
-        <!-- Right: Player & Output Station -->
-        <div class="tts-player-card">
-          <div class="player-header">
-            <h3><i class="fa-solid fa-compact-disc"></i> Audio Player</h3>
-            <span class="badge-tag" id="player-status-badge">Idle</span>
-          </div>
-
-          <div class="player-body">
-            <div class="audio-disc-visual" id="audio-disc-visual">
-              <i class="fa-solid fa-music fa-3x"></i>
-            </div>
-
-            <div class="player-meta">
-              <h4 id="player-title">No Audio Generated Yet</h4>
-              <p id="player-subtitle">Select a voice and click Generate Speech</p>
-            </div>
-
-            <audio id="tts-audio-element" controls class="custom-audio main-player-audio"></audio>
-
-            <div class="player-actions">
-              <a id="btn-download-mp3" href="#" download="synthesized_speech.mp3" class="pill-btn pill-btn-white" style="display: none;">
-                <i class="fa-solid fa-download"></i> Download MP3
-              </a>
-              <button id="btn-play-original-sample" type="button" class="pill-btn pill-btn-ghost" style="display: none;">
-                <i class="fa-solid fa-microphone"></i> Play Original Sample
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Speech History Table -->
-      <div class="section-card mt-30">
-        <div class="section-card-header">
-          <h3><i class="fa-solid fa-clock-rotate-left"></i> Synthesis History</h3>
-          <button class="btn-refresh" id="btn-refresh-history" title="Refresh history">
-            <i class="fa-solid fa-rotate"></i>
-          </button>
-        </div>
-        <div id="speech-history-list" class="history-table-wrap">
-          <div class="empty-state">
-            <i class="fa-solid fa-file-audio fa-2x"></i>
-            <p>No generations recorded yet.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- =========================================================================
-         TAB 4: SETTINGS & ACCOUNT
-         ========================================================================= -->
-    <section id="tab-settings" class="tab-pane">
-      <div class="view-header">
-        <h1 class="view-title">Settings & Governance</h1>
-        <p class="view-subtitle">Manage your account, voice engine, and privacy controls.</p>
-      </div>
-
-      <div class="settings-grid">
-        <!-- Account Card -->
-        <div class="settings-card">
-          <h3><i class="fa-solid fa-user-shield"></i> Account & Verification</h3>
-          <div class="settings-field">
-            <label>User Identifier</label>
-            <span class="field-val" id="settings-user-id">Loading...</span>
-          </div>
-          <div class="settings-field">
-            <label>Registered Email</label>
-            <span class="field-val" id="settings-user-email">Loading...</span>
-          </div>
-          <div class="settings-field">
-            <label>Consent Status</label>
-            <span class="badge-tag badge-security" id="settings-consent-status">—</span>
-          </div>
-        </div>
-
-        <!-- Voice engine (local Chatterbox model run by the worker) -->
-        <div class="settings-card">
-          <h3><i class="fa-solid fa-server text-primary"></i> Voice Engine</h3>
-          <p class="settings-desc">
-            Voices are cloned by Chatterbox (Resemble AI, MIT license) running on your own machine. No API keys, no usage limits. Generated audio carries an inaudible AI watermark.
-          </p>
-          <div id="engine-status-list" class="engine-status-list"></div>
-        </div>
-
-        <!-- Privacy & Storage Policy -->
-        <div class="settings-card">
-          <h3><i class="fa-solid fa-lock"></i> Privacy & Storage Policy</h3>
-          <p class="settings-desc">
-            All source recordings and synthesized audio files are stored in private storage. Cloned voice models and synthesis audio can be managed or deleted immediately using the actions below.
-          </p>
-          <div class="danger-zone">
-            <h4>Voice Model Management</h4>
-            <div class="danger-row">
-              <div>
-                <strong>Delete Cloned Voices</strong>
-                <p>Permanently revokes and removes all cloned models from storage.</p>
-              </div>
-              <button class="pill-btn pill-btn-danger" id="btn-delete-all-voices">
-                Delete Voices
-              </button>
-            </div>
-            <div class="danger-row">
-              <div>
-                <strong>Purge Generated Audio</strong>
-                <p>Delete all synthesized MP3 files and audit records from storage.</p>
-              </div>
-              <button class="pill-btn pill-btn-danger" id="btn-delete-all-audio">
-                Purge Audio
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- System Architecture Information -->
-        <div class="settings-card">
-          <h3><i class="fa-solid fa-server"></i> System Status</h3>
-          <ul class="system-status-list" id="system-status-list">
-            <li><span>Checking services…</span></li>
-          </ul>
-        </div>
-      </div>
-    </section>
-
   </main>
 
-  <!-- Login / Register Modal for Unauthenticated Users -->
-  <div class="auth-modal-overlay" id="auth-modal" hidden>
-    <div class="auth-modal-card">
-      <div class="auth-modal-header">
-        <img src="../assets/logo.webp" alt="" width="48" height="48" class="auth-logo" />
-        <h2>Intelligence</h2>
-        <p>Access your secure Voice Studio</p>
-      </div>
-
-      <div class="auth-tabs">
-        <button class="auth-tab-btn active" id="tab-auth-login">Sign In</button>
-        <button class="auth-tab-btn" id="tab-auth-register">Create Account</button>
-      </div>
-
-      <!-- Sign In Form -->
-      <form id="form-auth-login" class="auth-form active">
-        <div class="form-group">
-          <label for="login-email">Email Address</label>
-          <input type="email" id="login-email" class="input-dark" placeholder="name@company.com" required />
-        </div>
-        <div class="form-group">
-          <label for="login-password">Password</label>
-          <input type="password" id="login-password" class="input-dark" placeholder="••••••••" required />
-        </div>
-        <button type="submit" class="pill-btn pill-btn-primary full-width" id="btn-submit-login">
-          Sign In to Studio
-        </button>
-      </form>
-
-      <!-- Register Form -->
-      <form id="form-auth-register" class="auth-form">
-        <div class="form-group">
-          <label for="register-email">Email Address</label>
-          <input type="email" id="register-email" class="input-dark" placeholder="name@company.com" required />
-        </div>
-        <div class="form-group">
-          <label for="register-password">Password (min. 8 characters)</label>
-          <input type="password" id="register-password" class="input-dark" minlength="8" placeholder="••••••••" required />
-        </div>
-        <div class="form-group">
-          <label for="register-confirm">Confirm Password</label>
-          <input type="password" id="register-confirm" class="input-dark" minlength="8" placeholder="••••••••" required />
-        </div>
-        <button type="submit" class="pill-btn pill-btn-primary full-width" id="btn-submit-register">
-          Create Account & Proceed
-        </button>
-      </form>
-    </div>
+  <!-- ============================ AUTH ============================ -->
+  <div class="modal" id="auth-modal" hidden>
+    <form class="card auth" id="auth-form">
+      <img src="../assets/logo.webp" alt="" width="44" height="44" />
+      <h2 id="auth-title">Sign in</h2>
+      <label class="field">Email <input type="email" id="auth-email" autocomplete="email" required /></label>
+      <label class="field">Password <input type="password" id="auth-password" minlength="8" autocomplete="current-password" required /></label>
+      <button class="btn btn-primary btn-block" id="btn-auth" type="submit">Sign in</button>
+      <button class="link" type="button" id="btn-auth-switch">No account? Create one</button>
+    </form>
   </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <script src="config.js"></script>
   <script src="dashboard.js"></script>

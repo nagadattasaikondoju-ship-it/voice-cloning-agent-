@@ -13,15 +13,6 @@
   <!-- BubbledotICG-FinePos from OnlineWebFonts -->
   <link href="https://db.onlinewebfonts.com/c/8cb707a9b8a73f8a7403336b861c3074?family=BubbledotICG-FinePos" rel="stylesheet" />
 
-  <!-- Font Awesome 6.5.2 -->
-  <link
-    rel="stylesheet"
-    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
-    integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
-    crossorigin="anonymous"
-    referrerpolicy="no-referrer"
-  />
-
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -42,52 +33,15 @@
         <img src="assets/logo.webp" alt="" width="52" height="52" class="logo-img" />
       </a>
 
-      <nav class="nav-pill" aria-label="Main Navigation">
-        <a href="#home" class="nav-link active">Home</a>
-        <a href="#product" class="nav-link">Product</a>
-        <a href="#case-studies" class="nav-link">Case Studies</a>
-        <a href="#contact" class="nav-link">Contact</a>
-      </nav>
-
       <a href="frontend/dashboard.html" class="sign-in-btn">Sign in</a>
 
-      <button
-        class="burger-btn"
-        id="burger-btn"
-        aria-label="Toggle navigation menu"
-        aria-expanded="false"
-        aria-controls="mobile-sheet"
-      >
-        <span class="burger-bar"></span>
-        <span class="burger-bar"></span>
-        <span class="burger-bar"></span>
-      </button>
     </header>
 
     <!-- 2. Hero (Center) -->
     <main class="hero">
-      <!-- Trust row -->
+      <!-- What it is -->
       <div class="trust-row anim" style="--d: 0.05s;">
-        <div class="trust-avatars">
-          <div class="trust-avatar avatar-1" title="Microsoft">
-            <div class="avatar-inner">
-              <i class="fa-brands fa-microsoft"></i>
-            </div>
-          </div>
-          <div class="trust-avatar avatar-2" title="Amazon">
-            <div class="avatar-inner">
-              <i class="fa-brands fa-amazon"></i>
-            </div>
-          </div>
-          <div class="trust-avatar avatar-3" title="Google">
-            <div class="avatar-inner">
-              <i class="fa-brands fa-google"></i>
-            </div>
-          </div>
-        </div>
-        <div class="trust-pill">
-          <span>Trusted by 2000+ Enterprises</span>
-        </div>
+        <div class="trust-pill"><span>Free · Runs on your computer · Consent-verified</span></div>
       </div>
 
       <!-- Headline -->
@@ -98,7 +52,8 @@
 
       <!-- Subhead -->
       <p class="subhead anim" style="--d: 0.28s;">
-        Build applications that reason, adapt and collaborate using a modular AI platform designed for production.
+        Clone your own voice from a short recording, then turn any script into natural speech.
+        No API keys, no usage limits.
       </p>
 
       <!-- CTA -->
@@ -108,50 +63,37 @@
     </main>
 
     <!-- 3. Stats Footer -->
-    <footer class="stats-footer" id="stats-section">
-      <div class="stat-item anim" style="--d: 0.5s;" data-target="120" data-suffix="ms" data-decimals="0">
+    <footer class="stats-footer">
+      <div class="stat-item anim" style="--d: 0.50s;">
         <span class="stat-icon">&lt;</span>
         <div class="stat-content">
-          <span class="stat-value">0ms</span>
-          <span class="stat-label">Inference Time</span>
+          <span class="stat-value">10s</span>
+          <span class="stat-label">Voice sample</span>
         </div>
       </div>
-      <div class="stat-item anim" style="--d: 0.58s;" data-target="99.99" data-suffix="%" data-decimals="2">
-        <span class="stat-icon">%</span>
-        <div class="stat-content">
-          <span class="stat-value">0%</span>
-          <span class="stat-label">Platform Uptime</span>
-        </div>
-      </div>
-      <div class="stat-item anim" style="--d: 0.66s;" data-target="24" data-suffix="/7" data-decimals="0">
-        <span class="stat-icon">*</span>
-        <div class="stat-content">
-          <span class="stat-value">0/7</span>
-          <span class="stat-label">Autonomous Runtime</span>
-        </div>
-      </div>
-      <div class="stat-item anim" style="--d: 0.74s;" data-target="2.4" data-suffix="M" data-decimals="1">
+      <div class="stat-item anim" style="--d: 0.58s;">
         <span class="stat-icon">#</span>
         <div class="stat-content">
-          <span class="stat-value">0M</span>
-          <span class="stat-label">Context Windows</span>
+          <span class="stat-value">0</span>
+          <span class="stat-label">API keys needed</span>
+        </div>
+      </div>
+      <div class="stat-item anim" style="--d: 0.66s;">
+        <span class="stat-icon">%</span>
+        <div class="stat-content">
+          <span class="stat-value">100%</span>
+          <span class="stat-label">Runs locally</span>
+        </div>
+      </div>
+      <div class="stat-item anim" style="--d: 0.74s;">
+        <span class="stat-icon">*</span>
+        <div class="stat-content">
+          <span class="stat-value">MP3</span>
+          <span class="stat-label">Download</span>
         </div>
       </div>
     </footer>
   </div>
 
-  <!-- Mobile Overlay & Menu Sheet -->
-  <div class="mobile-overlay" id="mobile-overlay" hidden></div>
-  <div class="mobile-sheet" id="mobile-sheet" hidden>
-    <nav class="mobile-nav" aria-label="Mobile Navigation">
-      <a href="#home" class="mobile-nav-link active">Home</a>
-      <a href="#product" class="mobile-nav-link">Product</a>
-      <a href="#case-studies" class="mobile-nav-link">Case Studies</a>
-      <a href="#contact" class="mobile-nav-link">Contact</a>
-      <a href="frontend/dashboard.html" class="mobile-sign-in-btn">Sign in</a>
-    </nav>
-  </div>
-
-  <script src="main.js"></script>
 </body>
 </html>

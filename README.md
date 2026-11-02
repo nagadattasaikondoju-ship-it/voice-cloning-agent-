@@ -8,7 +8,7 @@ aloud, and the API refuses to create a clone until Whisper's transcript of that 
 - **Rust (Axum) API:** auth, consent, uploads, ownership checks, audit log
 - **Python worker:** runs the Chatterbox model on GPU or CPU and processes jobs from Redis
 - **Whisper speech pipeline** (faster-whisper): verifies spoken consent, turns audio into script text
-- **Static dashboard:** HTML/CSS/vanilla JS
+- **Static dashboard:** HTML/CSS/vanilla JS, two tabs: **Voices** (record or upload a sample → read the consent phrase → name it) and **Speak** (pick a voice, type or load a script, generate, play, download, history)
 
 ---
 
@@ -150,7 +150,7 @@ cd worker-python && python health.py
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| "Voice worker: not running" | `worker-python` is not running | `docker compose logs worker-python` |
+| Status pill says "Engine offline" | `worker-python` is not running | `docker compose logs worker-python` |
 | "Loading model…" for a long time | First start is downloading the model | Wait; check the worker log for download progress |
 | Worker log: GPU out of memory, falling back to CPU | Another program is using GPU memory | Close GPU-heavy apps and restart the worker |
 | Generation is slow | Running on CPU | Use the GPU compose file; check the dashboard shows "on GPU" |
@@ -161,7 +161,7 @@ cd worker-python && python health.py
 
 ## Scripts from files or audio
 
-In **Text to Speech**, **Load script or audio** fills the script box from `.txt`, `.md`, `.srt` or `.vtt`.
+In the **Speak** tab, **Load script or audio** fills the script box from `.txt`, `.md`, `.srt` or `.vtt`.
 Audio (mp3, m4a, wav, webm, ogg) is transcribed with Whisper, so an existing recording can be re-spoken in a cloned voice.
 
 ---
@@ -207,7 +207,7 @@ backend-rust/      Axum API (src/routes/*, consent_check.rs, stt.rs, migrations/
 worker-python/     main.py (queue loop + heartbeat), tts.py (Chatterbox), jobs.py, audio_utils.py, health.py
 speech_pipeline/   Whisper service (POST /api/v1/transcribe)
 frontend/          Dashboard (dashboard.html/.css/.js, config.js)
-index.html …       Landing page
+index.html, styles.css   Landing page
 docker-compose.yml          Full stack (CPU)
 docker-compose.gpu.yml      Adds the NVIDIA GPU to the voice worker
 ```
