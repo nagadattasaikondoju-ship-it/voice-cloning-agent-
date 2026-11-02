@@ -89,6 +89,17 @@ To check that Docker can see your GPU:
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
+## Hosted dashboard (Vercel)
+
+The web pages are also published at **https://voice-cloning-studio-beta.vercel.app**
+(dashboard: `/frontend/dashboard.html`). Only the static files are on Vercel (`.vercelignore`); the API,
+voice worker and Whisper still run on **your** machine through Docker. The hosted page calls `http://localhost:8080`,
+so it works only in a browser on the computer running the stack.
+
+- `ALLOWED_ORIGINS` in `.env` must include the Vercel URL (it does in `.env.example`).
+- Chrome may ask to allow access to devices on your local network. Click **Allow**.
+- Other people opening the link see the pages but cannot use them unless they run the stack themselves.
+
 ## Local development (without Docker)
 
 Needs Rust 1.89+, Python 3.11 (Chatterbox needs 3.10–3.12), PostgreSQL 15+, Redis 7+ and `ffmpeg`.
