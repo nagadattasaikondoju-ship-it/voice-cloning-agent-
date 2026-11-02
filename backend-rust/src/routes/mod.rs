@@ -3,6 +3,7 @@ pub mod clone_routes;
 pub mod consent_routes;
 pub mod meta_routes;
 pub mod speech_routes;
+pub mod transcribe_routes;
 
 use std::collections::HashMap;
 

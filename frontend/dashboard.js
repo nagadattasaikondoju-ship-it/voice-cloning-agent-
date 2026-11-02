@@ -1,36 +1,31 @@
 /**
- * Intelligence Designed To Evolve - Voice Studio Dashboard
- * Vanilla JavaScript client for the Rust API (backend-rust).
- *
- * Flow: sign in -> record/upload sample -> server-issued consent phrase -> record phrase
- * -> Whisper verification on the server -> create clone (queued for the Python worker)
- * -> generate speech (queued) -> poll -> play private MP3 via authenticated fetch.
+ * Voice Studio: vanilla JS client for the Rust API.
+ * Voices tab: sample -> spoken consent (Whisper-verified) -> name -> clone job.
+ * Speak tab:  voice + script -> speech job -> private MP3 (fetched with the JWT).
  */
+const API = ((window.APP_CONFIG && window.APP_CONFIG.apiBaseUrl) || "http://localhost:8080").replace(/\/$/, "");
+const MAX_BYTES = 20 * 1024 * 1024;
+const MIN_SECONDS = 6;
+const MAX_SECONDS = 300;
+const MAX_CHARS = 5000;
 
-const API_BASE_URL = ((window.APP_CONFIG && window.APP_CONFIG.apiBaseUrl) || "http://localhost:8080").replace(/\/$/, "");
-const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
-const MIN_SAMPLE_SECONDS = 5;
-const MAX_SAMPLE_SECONDS = 300;
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const STATE = {
+const state = {
   token: localStorage.getItem("auth_token"),
   user: null,
-  engines: [],
-  currentStep: 1,
-  sampleBlob: null,
-  sampleFileName: null,
-  sampleDuration: 0,
-  consent: null, // { id, spoken_phrase, verified, ... }
+  engineReady: false,
+  sample: null, // { blob, name, seconds }
+  consent: null, // server consent record
   consentBlob: null,
-  clonedVoices: [],
-  speechHistory: [],
-  blobUrls: new Map(), // audio id -> object URL
-  voicePollTimer: null,
+  voices: [],
+  history: [],
+  audioUrls: new Map(), // audio id -> blob URL
+  timers: {},
 };
 
-/* ==========================================================================
-   API client
-   ========================================================================== */
+/* ---------------- API ---------------- */
 class ApiError extends Error {
   constructor(message, status) {
     super(message);
@@ -39,945 +34,554 @@ class ApiError extends Error {
 }
 
 async function api(path, { method = "GET", json, form, raw = false } = {}) {
-  const headers = {};
-  if (STATE.token) headers.Authorization = `Bearer ${STATE.token}`;
-  let body;
+  const headers = state.token ? { Authorization: `Bearer ${state.token}` } : {};
+  let body = form;
   if (json !== undefined) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(json);
-  } else if (form) {
-    body = form;
   }
-
   let res;
   try {
-    res = await fetch(`${API_BASE_URL}${path}`, { method, headers, body });
+    res = await fetch(API + path, { method, headers, body });
   } catch {
-    throw new ApiError(`Cannot reach the API at ${API_BASE_URL}. Is the backend running?`, 0);
+    throw new ApiError(`Cannot reach the server at ${API}. Is it running?`, 0);
   }
-
-  if (res.status === 401 && !path.startsWith("/api/auth/login") && !path.startsWith("/api/auth/register")) {
-    clearSession();
-    showAuthModal();
-    throw new ApiError("Your session has expired. Please sign in again.", 401);
+  if (res.status === 401 && !path.startsWith("/api/auth/")) {
+    signOut(false);
+    throw new ApiError("Your session expired. Please sign in again.", 401);
   }
   if (!res.ok) {
-    let message = `Request failed (${res.status})`;
-    try {
-      const data = await res.json();
-      if (data && data.message) message = data.message;
-    } catch {}
-    throw new ApiError(message, res.status);
+    const data = await res.json().catch(() => ({}));
+    throw new ApiError(data.message || `Request failed (${res.status})`, res.status);
   }
   if (raw) return res;
   const text = await res.text();
   return text ? JSON.parse(text) : null;
 }
 
-/* ==========================================================================
-   Initialization
-   ========================================================================== */
-document.addEventListener("DOMContentLoaded", async () => {
-  initAuthUI();
-  initTabs();
-  initVoiceStudio();
-  initTTSStudio();
-  initSettings();
-
-  loadEngines();
-  loadHealth();
-
-  if (!STATE.token) {
-    showAuthModal();
-    return;
-  }
-  try {
-    const user = await api("/api/auth/me");
-    onSignedIn(STATE.token, user);
-  } catch (err) {
-    if (err.status !== 401) showToast(err.message, "error");
-    showAuthModal();
-  }
-});
-
-/* ==========================================================================
-   Toasts & helpers
-   ========================================================================== */
-function showToast(message, type = "info") {
-  const container = document.getElementById("toast-container");
-  if (!container) return;
-  const toast = document.createElement("div");
-  toast.className = `toast ${type}`;
-  const icon = type === "success" ? "fa-circle-check" : type === "error" ? "fa-circle-exclamation" : "fa-circle-info";
-  toast.innerHTML = `<i class="fa-solid ${icon}"></i> <span>${escapeHtml(message)}</span>`;
-  container.appendChild(toast);
+/* ---------------- helpers ---------------- */
+function toast(message, type = "info") {
+  const el = document.createElement("div");
+  el.className = `toast ${type}`;
+  el.textContent = message;
+  $("toasts").appendChild(el);
   setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transform = "translateY(10px)";
-    setTimeout(() => toast.remove(), 250);
-  }, type === "error" ? 6000 : 4000);
+    el.style.opacity = "0";
+    setTimeout(() => el.remove(), 250);
+  }, type === "error" ? 6000 : 3500);
 }
 
-function escapeHtml(str) {
-  if (str === null || str === undefined) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
-function setButtonBusy(btn, busy, busyHtml) {
-  if (busy) {
-    btn.dataset.idleHtml = btn.dataset.idleHtml || btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = busyHtml;
-  } else {
+/** Disable a button and show `html` while `fn` runs. */
+async function busy(btn, html, fn) {
+  const idle = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${html}`;
+  try {
+    return await fn((text) => (btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${text}`));
+  } finally {
     btn.disabled = false;
-    if (btn.dataset.idleHtml) btn.innerHTML = btn.dataset.idleHtml;
+    btn.innerHTML = idle;
   }
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function engineName(id) {
-  const e = STATE.engines.find((x) => x.id === id);
-  return e ? e.name : id;
-}
-
-function extensionForMime(mime) {
-  const m = (mime || "").toLowerCase();
-  if (m.includes("webm")) return "webm";
-  if (m.includes("ogg")) return "ogg";
-  if (m.includes("mp4") || m.includes("m4a") || m.includes("aac")) return "m4a";
-  if (m.includes("mpeg") || m.includes("mp3")) return "mp3";
+function extFor(mime = "") {
+  if (mime.includes("webm")) return "webm";
+  if (mime.includes("ogg")) return "ogg";
+  if (mime.includes("mp4") || mime.includes("m4a") || mime.includes("aac")) return "m4a";
+  if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
   return "wav";
 }
 
-/* ==========================================================================
-   Tabs
-   ========================================================================== */
-function switchTab(tabId) {
-  document.querySelectorAll(".nav-tab-btn, .mobile-tab").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.tab === tabId);
-  });
-  document.querySelectorAll(".tab-pane").forEach((pane) => {
-    pane.classList.toggle("active", pane.id === `tab-${tabId}`);
-  });
-  if (STATE.user && (tabId === "speech-studio" || tabId === "overview")) {
-    fetchClonedVoices();
-    fetchSpeechHistory();
-  }
-}
-window.switchTab = switchTab;
+/* ---------------- auth ---------------- */
+let registering = false;
 
-function initTabs() {
-  document.querySelectorAll(".nav-tab-btn, .mobile-tab").forEach((btn) => {
-    btn.addEventListener("click", () => btn.dataset.tab && switchTab(btn.dataset.tab));
-  });
+function showAuth() {
+  $("auth-modal").hidden = false;
+  $("auth-email").focus();
 }
 
-/* ==========================================================================
-   Authentication
-   ========================================================================== */
-function showAuthModal() {
-  document.getElementById("auth-modal").hidden = false;
+function setAuthMode(register) {
+  registering = register;
+  $("auth-title").textContent = register ? "Create account" : "Sign in";
+  $("btn-auth").textContent = register ? "Create account" : "Sign in";
+  $("btn-auth-switch").textContent = register ? "Have an account? Sign in" : "No account? Create one";
+  $("auth-password").autocomplete = register ? "new-password" : "current-password";
 }
 
-function clearSession() {
-  STATE.token = null;
-  STATE.user = null;
-  localStorage.removeItem("auth_token");
-}
-
-function initAuthUI() {
-  const tabLogin = document.getElementById("tab-auth-login");
-  const tabRegister = document.getElementById("tab-auth-register");
-  const formLogin = document.getElementById("form-auth-login");
-  const formRegister = document.getElementById("form-auth-register");
-
-  const showForm = (login) => {
-    tabLogin.classList.toggle("active", login);
-    tabRegister.classList.toggle("active", !login);
-    formLogin.classList.toggle("active", login);
-    formRegister.classList.toggle("active", !login);
-  };
-  tabLogin.addEventListener("click", () => showForm(true));
-  tabRegister.addEventListener("click", () => showForm(false));
-
-  document.getElementById("btn-logout-header").addEventListener("click", async () => {
-    try {
-      await api("/api/auth/logout", { method: "POST" });
-    } catch {}
-    clearSession();
-    location.reload();
-  });
-
-  formLogin.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const btn = document.getElementById("btn-submit-login");
-    setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Signing in...');
-    try {
-      const data = await api("/api/auth/login", {
-        method: "POST",
-        json: {
-          email: document.getElementById("login-email").value.trim(),
-          password: document.getElementById("login-password").value,
-        },
-      });
-      onSignedIn(data.token, data.user);
-      showToast("Welcome back!", "success");
-    } catch (err) {
-      showToast(err.message, "error");
-    } finally {
-      setButtonBusy(btn, false);
-    }
-  });
-
-  formRegister.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const password = document.getElementById("register-password").value;
-    if (password !== document.getElementById("register-confirm").value) {
-      showToast("Passwords do not match.", "error");
-      return;
-    }
-    const btn = document.getElementById("btn-submit-register");
-    setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Creating account...');
-    try {
-      const data = await api("/api/auth/register", {
-        method: "POST",
-        json: { email: document.getElementById("register-email").value.trim(), password },
-      });
-      onSignedIn(data.token, data.user);
-      showToast("Account created.", "success");
-    } catch (err) {
-      showToast(err.message, "error");
-    } finally {
-      setButtonBusy(btn, false);
-    }
-  });
-}
-
-function onSignedIn(token, user) {
-  STATE.token = token;
-  STATE.user = user;
+async function signIn(token, user) {
+  state.token = token;
+  state.user = user;
   localStorage.setItem("auth_token", token);
-  document.getElementById("auth-modal").hidden = true;
-
-  document.getElementById("header-user-email").textContent = user.email;
-  document.getElementById("user-avatar-initial").textContent = (user.email[0] || "U").toUpperCase();
-  document.getElementById("settings-user-email").textContent = user.email;
-  document.getElementById("settings-user-id").textContent = user.id;
-
-  fetchClonedVoices();
-  fetchSpeechHistory();
-  fetchConsents();
+  $("auth-modal").hidden = true;
+  $("user-email").textContent = user.email;
+  await Promise.all([loadVoices(), loadHistory()]);
 }
 
-/* ==========================================================================
-   Engines & health
-   ========================================================================== */
-async function loadEngines() {
+function signOut(reload = true) {
+  state.token = null;
+  state.user = null;
+  localStorage.removeItem("auth_token");
+  if (reload) location.reload();
+  else showAuth();
+}
+
+/* ---------------- engine status ---------------- */
+async function loadEngine() {
+  let e;
   try {
-    STATE.engines = await api("/api/engines");
+    e = await api("/api/engine");
   } catch (err) {
-    STATE.engines = [];
-    document.getElementById("engine-banner-badge").textContent = "API offline";
-    document.getElementById("engine-banner-desc").textContent = err.message;
-    return;
+    e = { status: "offline", problem: err.message };
   }
-  const available = STATE.engines.filter((e) => e.available);
-
-  document.getElementById("engine-banner-badge").textContent = available.length
-    ? `Engines: ${available.map((e) => e.name.split(" (")[0]).join(" · ")}`
-    : "No engines configured";
-  document.getElementById("metric-model-name").textContent = available.length ? String(available.length) : "0";
-
-  const select = document.getElementById("clone-engine-select");
-  select.innerHTML = "";
-  STATE.engines.forEach((e) => {
-    const opt = document.createElement("option");
-    opt.value = e.id;
-    opt.textContent = e.available ? e.name : `${e.name} (not configured)`;
-    opt.disabled = !e.available;
-    select.appendChild(opt);
-  });
-  if (available[0]) select.value = available[0].id;
-  updateEngineSummary();
-
-  document.getElementById("engine-status-list").innerHTML = STATE.engines
-    .map(
-      (e) => `
-      <div class="engine-status-item">
-        <div><strong>${escapeHtml(e.name)}</strong><p>${escapeHtml(e.description)}</p></div>
-        <span class="status-badge ${e.available ? "ready" : "failed"}">${e.available ? "available" : "not configured"}</span>
-      </div>`
-    )
-    .join("");
+  state.engineReady = e.status === "ready";
+  const device = e.device === "cuda" ? "GPU" : e.device === "cpu" ? "CPU" : "";
+  const label = { ready: `Ready${device ? " · " + device : ""}`, loading: "Loading model…", error: "Engine error", offline: "Engine offline" };
+  $("engine-pill").className = `engine-pill ${e.status}`;
+  $("engine-text").textContent = label[e.status] || e.status;
+  $("engine-alert").hidden = state.engineReady || e.status === "loading" || !e.problem;
+  $("engine-alert").textContent = e.problem || "";
+  clearTimeout(state.timers.engine);
+  state.timers.engine = setTimeout(loadEngine, state.engineReady ? 30000 : 5000);
 }
 
-async function loadHealth() {
-  const list = document.getElementById("system-status-list");
-  const row = (label, ok, okText = "Connected", badText = "Unavailable") =>
-    `<li><span>${label}</span><strong class="${ok ? "text-success" : "text-danger"}">
-       <i class="fa-solid ${ok ? "fa-circle-check" : "fa-circle-xmark"}"></i> ${ok ? okText : badText}</strong></li>`;
-  try {
-    const h = await api("/api/health");
-    list.innerHTML =
-      row("Rust API (Axum)", true, "Online") +
-      row("PostgreSQL", h.database) +
-      row("Redis job queue", h.redis) +
-      row("Whisper speech pipeline", h.speech_pipeline, "Online", "Offline (consent checks will fail)");
-  } catch {
-    list.innerHTML = row("Rust API (Axum)", false, "Online", `Offline (${API_BASE_URL})`);
-  }
-}
+/* ---------------- recorder ---------------- */
+/** Mic recorder with a level meter. Calls onDone(blob, seconds) with the recorder's real MIME type. */
+function recorder(btn, meter, onDone) {
+  let rec = null;
+  btn.addEventListener("click", async () => {
+    if (rec && rec.state === "recording") return rec.stop();
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      return toast("Microphone access was denied or is unavailable.", "error");
+    }
+    const chunks = [];
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    let frame;
+    const draw = () => {
+      analyser.getByteFrequencyData(data);
+      meter.style.width = `${Math.min(100, (data.reduce((a, b) => a + b, 0) / data.length / 128) * 100)}%`;
+      frame = requestAnimationFrame(draw);
+    };
+    const started = Date.now();
+    const tick = setInterval(() => {
+      const s = Math.floor((Date.now() - started) / 1000);
+      btn.querySelector(".timer").textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    }, 250);
 
-function updateEngineSummary() {
-  const id = document.getElementById("clone-engine-select").value;
-  const engine = STATE.engines.find((e) => e.id === id);
-  document.getElementById("summary-engine-name").textContent = engine ? engine.name : "—";
-  document.getElementById("step3-engine-badge").textContent = engine ? `Engine: ${engine.name.split(" (")[0]}` : "Choose an engine";
-  document.getElementById("clone-engine-hint").textContent = engine ? engine.description : "";
-}
-
-/* ==========================================================================
-   Voices
-   ========================================================================== */
-async function fetchClonedVoices() {
-  if (!STATE.user) return;
-  try {
-    STATE.clonedVoices = await api("/api/voice-clones");
-  } catch (err) {
-    showToast(err.message, "error");
-  }
-  renderClonedVoices();
-  scheduleVoicePolling();
-}
-
-function scheduleVoicePolling() {
-  clearTimeout(STATE.voicePollTimer);
-  const pending = STATE.clonedVoices.some((v) => v.status === "queued" || v.status === "processing");
-  if (pending) STATE.voicePollTimer = setTimeout(fetchClonedVoices, 3000);
-}
-
-function renderClonedVoices() {
-  const container = document.getElementById("cloned-voices-list");
-  const select = document.getElementById("tts-voice-select");
-  const previous = select.value;
-  document.getElementById("metric-voice-count").textContent = STATE.clonedVoices.length;
-
-  select.innerHTML = '<option value="" disabled selected>-- Choose one of your cloned voices --</option>';
-  STATE.clonedVoices
-    .filter((v) => v.status === "ready")
-    .forEach((v) => {
-      const opt = document.createElement("option");
-      opt.value = v.id;
-      opt.textContent = `${v.display_name} — ${engineName(v.engine)}`;
-      select.appendChild(opt);
-    });
-  if (previous && [...select.options].some((o) => o.value === previous)) select.value = previous;
-  updateControlHints();
-
-  if (STATE.clonedVoices.length === 0) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <i class="fa-solid fa-microphone-slash fa-2x"></i>
-        <p>No cloned voices yet. Complete the steps above to clone your voice.</p>
-      </div>`;
-    return;
-  }
-
-  container.innerHTML = "";
-  STATE.clonedVoices.forEach((voice) => {
-    const card = document.createElement("div");
-    card.className = "voice-card";
-    const isReady = voice.status === "ready";
-    card.innerHTML = `
-      <div class="voice-card-top">
-        <div>
-          <h4 class="voice-name">${escapeHtml(voice.display_name)}</h4>
-          <span class="voice-id-tag">${escapeHtml(voice.voice_id)}</span>
-          <span class="engine-tag">${escapeHtml(engineName(voice.engine))}</span>
-          ${voice.error_message ? `<div class="voice-error"><i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(voice.error_message)}</div>` : ""}
-        </div>
-        <span class="status-badge ${escapeHtml(voice.status)}">${escapeHtml(voice.status)}</span>
-      </div>
-      <div class="voice-card-actions">
-        <button class="pill-btn pill-btn-ghost btn-test-voice" ${isReady ? "" : "disabled"}>
-          <i class="fa-solid fa-play"></i> Use Voice
-        </button>
-        <button class="pill-btn pill-btn-danger btn-delete-voice" title="Delete voice">
-          <i class="fa-solid fa-trash-can"></i>
-        </button>
-      </div>`;
-
-    card.querySelector(".btn-test-voice").addEventListener("click", () => {
-      switchTab("speech-studio");
-      select.value = voice.id;
-      updateControlHints();
-      const input = document.getElementById("tts-text-input");
-      if (!input.value.trim()) {
-        input.value = `Hello! This is a preview of my cloned voice, ${voice.display_name}.`;
-        document.getElementById("tts-char-counter").textContent = `${input.value.length} / 5000`;
-      }
-    });
-    card.querySelector(".btn-delete-voice").addEventListener("click", async () => {
-      if (confirm(`Delete voice "${voice.display_name}"? It is also removed from the provider.`)) {
-        await deleteClonedVoice(voice.id);
-      }
-    });
-    container.appendChild(card);
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    rec.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      cancelAnimationFrame(frame);
+      clearInterval(tick);
+      ctx.close();
+      meter.style.width = "0";
+      btn.classList.remove("recording");
+      btn.querySelector(".label").textContent = "Record again";
+      onDone(new Blob(chunks, { type: rec.mimeType || "audio/webm" }), (Date.now() - started) / 1000);
+    };
+    rec.start(200);
+    draw();
+    btn.classList.add("recording");
+    btn.querySelector(".label").textContent = "Stop";
   });
 }
 
-async function deleteClonedVoice(id, quiet = false) {
-  try {
-    await api(`/api/voice-clones/${id}`, { method: "DELETE" });
-    if (!quiet) showToast("Voice deleted", "success");
-  } catch (err) {
-    showToast(err.message, "error");
-  }
-  await fetchClonedVoices();
+/* ---------------- create a voice ---------------- */
+function goStep(n) {
+  document.querySelectorAll(".step").forEach((el) => el.classList.toggle("active", el.id === `step-${n}`));
+  document.querySelectorAll(".steps li").forEach((li) => {
+    const s = Number(li.dataset.step);
+    li.className = s < n ? "done" : s === n ? "active" : "";
+  });
+  if (n === 2 && !state.consent) newPhrase();
+  if (n === 3) $("voice-name").focus();
 }
 
-async function fetchConsents() {
-  try {
-    const consents = await api("/api/consents");
-    const verified = consents.filter((c) => c.verified).length;
-    document.getElementById("metric-consent-status").textContent = String(verified);
-    document.getElementById("settings-consent-status").textContent = verified
-      ? `${verified} verified spoken consent${verified > 1 ? "s" : ""}`
-      : "No verified consent yet";
-  } catch {}
+function setSample(blob, name, seconds) {
+  const okLength = seconds >= MIN_SECONDS && seconds <= MAX_SECONDS;
+  state.sample = okLength && blob.size <= MAX_BYTES ? { blob, name, seconds } : null;
+  $("sample-audio").src = URL.createObjectURL(blob);
+  $("sample-preview").hidden = false;
+  $("sample-info").textContent = `${seconds.toFixed(1)} s · ${(blob.size / 1048576).toFixed(2)} MB`;
+  $("btn-step-1").disabled = !state.sample;
+  if (!okLength) toast(`Use ${MIN_SECONDS} s to 5 min of speech (this is ${seconds.toFixed(1)} s).`, "error");
+  else if (blob.size > MAX_BYTES) toast("Audio must be under 20 MB.", "error");
 }
 
-/* ==========================================================================
-   Voice Studio (3 steps)
-   ========================================================================== */
-function initVoiceStudio() {
-  document.getElementById("btn-next-step-1").addEventListener("click", () => goToStudioStep(2));
-  document.getElementById("btn-back-step-2").addEventListener("click", () => goToStudioStep(1));
-  document.getElementById("btn-next-step-2").addEventListener("click", verifyConsent);
-  document.getElementById("btn-back-step-3").addEventListener("click", () => goToStudioStep(2));
-  document.getElementById("btn-regenerate-phrase").addEventListener("click", () => issueConsentPhrase(true));
-  document.getElementById("clone-engine-select").addEventListener("change", updateEngineSummary);
-  document.getElementById("btn-next-step-1").disabled = true;
-
-  setupMediaRecorder({
-    btnId: "btn-record-sample",
-    labelId: "record-sample-label",
-    timerId: "sample-timer",
-    meterId: "sample-level-meter",
-    previewWrapId: "sample-record-preview-wrap",
-    audioId: "sample-record-audio",
-    metaId: "sample-record-meta",
-    onComplete: (blob, duration) => {
-      setSample(blob, `sample.${extensionForMime(blob.type)}`, duration);
-      document.getElementById("sample-upload-preview-wrap").hidden = true;
-    },
-  });
-
-  const dropZone = document.getElementById("sample-drop-zone");
-  const fileInput = document.getElementById("sample-file-input");
-  dropZone.addEventListener("click", () => fileInput.click());
-  dropZone.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    dropZone.classList.add("dragover");
-  });
-  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
-  dropZone.addEventListener("drop", (e) => {
-    e.preventDefault();
-    dropZone.classList.remove("dragover");
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) handleAudioFileUpload(e.dataTransfer.files[0]);
-  });
-  fileInput.addEventListener("change", (e) => {
-    if (e.target.files && e.target.files[0]) handleAudioFileUpload(e.target.files[0]);
-  });
-
-  setupMediaRecorder({
-    btnId: "btn-record-consent",
-    labelId: "record-consent-label",
-    timerId: "consent-timer",
-    meterId: "consent-level-meter",
-    previewWrapId: "consent-audio-preview-wrap",
-    audioId: "consent-audio-playback",
-    metaId: "consent-audio-meta",
-    onComplete: (blob) => {
-      STATE.consentBlob = blob;
-      hideConsentResult();
-      validateStep2();
-    },
-  });
-  document.getElementById("consent-checkbox").addEventListener("change", validateStep2);
-  document.getElementById("form-clone-voice").addEventListener("submit", handleVoiceCloneSubmit);
-}
-
-function setSample(blob, fileName, duration) {
-  STATE.sampleBlob = blob;
-  STATE.sampleFileName = fileName;
-  STATE.sampleDuration = duration;
-  const ok = duration >= MIN_SAMPLE_SECONDS && duration <= MAX_SAMPLE_SECONDS && blob.size <= MAX_UPLOAD_BYTES;
-  document.getElementById("btn-next-step-1").disabled = !ok;
-  if (!ok) {
-    showToast(`Samples must be ${MIN_SAMPLE_SECONDS}s–5min and under 20 MB (got ${duration.toFixed(1)}s).`, "error");
-    return;
-  }
-  const size = blob.size > 1024 * 1024 ? `${(blob.size / 1048576).toFixed(1)} MB` : `${Math.round(blob.size / 1024)} KB`;
-  document.getElementById("summary-sample-name").textContent = `${duration.toFixed(1)}s · ${size}`;
-  showToast("Voice sample ready", "success");
-}
-
-function handleAudioFileUpload(file) {
-  if (file.size > MAX_UPLOAD_BYTES) {
-    showToast("Audio exceeds the 20 MB size limit.", "error");
-    return;
-  }
-  const url = URL.createObjectURL(file);
-  document.getElementById("sample-upload-filename").textContent = file.name;
-  document.getElementById("sample-upload-filesize").textContent = `${(file.size / 1048576).toFixed(2)} MB`;
-  document.getElementById("sample-upload-audio").src = url;
-  document.getElementById("sample-upload-preview-wrap").hidden = false;
-  document.getElementById("sample-record-preview-wrap").hidden = true;
-
+function loadSampleFile(file) {
   const probe = new Audio();
   probe.preload = "metadata";
-  probe.addEventListener("loadedmetadata", () => {
-    const d = isFinite(probe.duration) ? probe.duration : 0;
-    document.getElementById("sample-upload-filesize").textContent = `${(file.size / 1048576).toFixed(2)} MB • ${Math.round(d)}s`;
-    setSample(file, file.name, d);
-  });
-  probe.addEventListener("error", () => showToast("This file could not be decoded as audio.", "error"));
-  probe.src = url;
+  probe.onloadedmetadata = () => setSample(file, file.name, isFinite(probe.duration) ? probe.duration : 0);
+  probe.onerror = () => toast("That file could not be read as audio.", "error");
+  probe.src = URL.createObjectURL(file);
 }
 
-function goToStudioStep(step) {
-  STATE.currentStep = step;
-  if (step === 2) {
-    if (!STATE.consent || STATE.consent.attempts_exhausted) issueConsentPhrase(false);
-    validateStep2();
-  }
-  if (step === 3) {
-    const nameInput = document.getElementById("clone-display-name");
-    if (!nameInput.value) nameInput.value = "My Voice";
-    updateEngineSummary();
-  }
-  for (let i = 1; i <= 3; i++) {
-    const node = document.getElementById(`step-node-${i}`);
-    const line = document.getElementById(`step-line-${i}`);
-    node.className = i < step ? "step-node completed" : i === step ? "step-node active" : "step-node";
-    if (line) line.className = i < step ? "step-line active" : "step-line";
-    document.getElementById(`studio-step-${i}`).classList.toggle("active", i === step);
-  }
-}
-
-async function issueConsentPhrase(userRequested) {
-  if (!STATE.user) return;
-  const display = document.getElementById("consent-phrase-display");
-  display.textContent = "Requesting a verification phrase…";
+async function newPhrase() {
+  $("consent-phrase").textContent = "Loading…";
+  state.consentBlob = null;
+  $("consent-preview").hidden = true;
+  $("consent-result").hidden = true;
+  updateVerifyButton();
   try {
-    STATE.consent = await api("/api/consents", { method: "POST", json: { consent_version: "v1.0" } });
-    STATE.consentBlob = null;
-    display.textContent = `"${STATE.consent.spoken_phrase}"`;
-    document.getElementById("consent-audio-preview-wrap").hidden = true;
-    document.getElementById("summary-consent-status").textContent = "Not verified";
-    hideConsentResult();
-    validateStep2();
-    if (userRequested) showToast("New phrase issued. Record it again.", "info");
+    state.consent = await api("/api/consents", { method: "POST", json: {} });
+    $("consent-phrase").textContent = state.consent.spoken_phrase;
   } catch (err) {
-    display.textContent = "Could not get a verification phrase.";
-    showToast(err.message, "error");
+    state.consent = null;
+    $("consent-phrase").textContent = "Could not load a phrase.";
+    toast(err.message, "error");
   }
 }
 
-function validateStep2() {
-  const ready = !!(STATE.consent && STATE.consentBlob && document.getElementById("consent-checkbox").checked);
-  document.getElementById("btn-next-step-2").disabled = !ready;
+function updateVerifyButton() {
+  $("btn-step-2").disabled = !(state.consent && state.consentBlob && $("consent-check").checked);
 }
 
-function hideConsentResult() {
-  document.getElementById("consent-verify-result").hidden = true;
-}
-
-function showConsentResult(ok, html) {
-  const el = document.getElementById("consent-verify-result");
-  el.className = `consent-verify-result ${ok ? "success" : "error"}`;
+function showResult(ok, html) {
+  const el = $("consent-result");
+  el.className = `result ${ok ? "ok" : "bad"}`;
   el.innerHTML = html;
   el.hidden = false;
 }
 
 async function verifyConsent() {
-  if (!STATE.consent || !STATE.consentBlob) return;
-  if (STATE.consent.verified) return goToStudioStep(3);
-
-  const btn = document.getElementById("btn-next-step-2");
-  setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Transcribing with Whisper…');
-  try {
-    const form = new FormData();
-    form.append("audio", STATE.consentBlob, `consent.${extensionForMime(STATE.consentBlob.type)}`);
-    const result = await api(`/api/consents/${STATE.consent.id}/verify`, { method: "POST", form });
-    STATE.consent = result.consent;
-    const pct = Math.round(result.match_score * 100);
-    const transcript = `<span class="transcript">Heard: "${escapeHtml(result.transcript || "(no speech detected)")}"</span>`;
-    if (result.verified) {
-      showConsentResult(true, `<strong><i class="fa-solid fa-shield-halved"></i> Consent verified</strong> — ${pct}% match.${transcript}`);
-      document.getElementById("summary-consent-status").textContent = `Verified (${pct}% match)`;
-      fetchConsents();
-      showToast("Spoken consent verified", "success");
-      setTimeout(() => goToStudioStep(3), 700);
-    } else {
-      const need = Math.round(result.threshold * 100);
-      showConsentResult(
-        false,
-        `<strong>Not verified</strong> — ${pct}% match, ${need}% required. ${result.attempts_remaining} attempt(s) left for this phrase.${transcript}`
-      );
-      STATE.consentBlob = null;
-      STATE.consent.attempts_exhausted = result.attempts_remaining <= 0;
-      if (STATE.consent.attempts_exhausted) await issueConsentPhrase(false);
-    }
-  } catch (err) {
-    showConsentResult(false, escapeHtml(err.message));
-    if (err.status === 429) await issueConsentPhrase(false);
-  } finally {
-    setButtonBusy(btn, false);
-    validateStep2();
-  }
-}
-
-async function handleVoiceCloneSubmit(e) {
-  e.preventDefault();
-  if (!STATE.consent || !STATE.consent.verified) {
-    showToast("Verify your spoken consent first.", "error");
-    return goToStudioStep(2);
-  }
-  if (!STATE.sampleBlob) {
-    showToast("Add a voice sample first.", "error");
-    return goToStudioStep(1);
-  }
-  const btn = document.getElementById("btn-submit-clone");
-  setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Uploading sample…');
-  try {
-    const form = new FormData();
-    form.append("audio", STATE.sampleBlob, STATE.sampleFileName || "sample.wav");
-    form.append("duration", STATE.sampleDuration.toFixed(2));
-    const sample = await api("/api/voice-samples", { method: "POST", form });
-
-    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Queuing clone job…';
-    const clone = await api("/api/voice-clones", {
-      method: "POST",
-      json: {
-        consent_id: STATE.consent.id,
-        sample_id: sample.id,
-        display_name: document.getElementById("clone-display-name").value.trim(),
-        engine: document.getElementById("clone-engine-select").value,
-      },
-    });
-    showToast(`"${clone.display_name}" queued. Status updates appear below.`, "success");
-    resetStudio();
-    await fetchClonedVoices();
-    document.getElementById("cloned-voices-list").scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (err) {
-    showToast(err.message, "error");
-  } finally {
-    setButtonBusy(btn, false);
-  }
-}
-
-function resetStudio() {
-  STATE.sampleBlob = null;
-  STATE.sampleDuration = 0;
-  STATE.consentBlob = null;
-  STATE.consent = null;
-  document.getElementById("consent-checkbox").checked = false;
-  document.getElementById("clone-display-name").value = "";
-  ["sample-record-preview-wrap", "sample-upload-preview-wrap", "consent-audio-preview-wrap"].forEach(
-    (id) => (document.getElementById(id).hidden = true)
-  );
-  document.getElementById("btn-next-step-1").disabled = true;
-  hideConsentResult();
-  goToStudioStep(1);
-}
-
-/** Microphone recorder with a level meter. Reports the recorder's real MIME type. */
-function setupMediaRecorder({ btnId, labelId, timerId, meterId, previewWrapId, audioId, metaId, onComplete }) {
-  const btn = document.getElementById(btnId);
-  const label = document.getElementById(labelId);
-  const timer = document.getElementById(timerId);
-  const meter = document.getElementById(meterId);
-  let recorder = null;
-  let chunks = [];
-  let startTime = 0;
-  let timerInterval = null;
-  let animFrame = null;
-  let audioCtx = null;
-
-  btn.addEventListener("click", async () => {
-    if (recorder && recorder.state === "recording") {
-      recorder.stop();
-      return;
-    }
-    let stream;
+  if (state.consent.verified) return goStep(3);
+  await busy($("btn-step-2"), "Checking…", async () => {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      showToast("Microphone access was denied or is unavailable.", "error");
-      return;
+      const form = new FormData();
+      form.append("audio", state.consentBlob, `consent.${extFor(state.consentBlob.type)}`);
+      const r = await api(`/api/consents/${state.consent.id}/verify`, { method: "POST", form });
+      state.consent = r.consent;
+      const heard = `<em>Heard: "${esc(r.transcript || "no speech detected")}"</em>`;
+      if (r.verified) {
+        showResult(true, `<strong>Verified</strong> (${Math.round(r.match_score * 100)}% match)${heard}`);
+        setTimeout(() => goStep(3), 600);
+      } else {
+        showResult(false, `<strong>Didn't match</strong> (${Math.round(r.match_score * 100)}%). Read the phrase exactly and try again. ${r.attempts_remaining} attempt(s) left.${heard}`);
+        state.consentBlob = null;
+        if (r.attempts_remaining <= 0) await newPhrase();
+      }
+    } catch (err) {
+      showResult(false, esc(err.message));
+      if (err.status === 429) await newPhrase();
     }
-    chunks = [];
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 256;
-    audioCtx.createMediaStreamSource(stream).connect(analyser);
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    const draw = () => {
-      analyser.getByteFrequencyData(data);
-      const avg = data.reduce((a, b) => a + b, 0) / data.length;
-      if (meter) meter.style.width = `${Math.min((avg / 128) * 100, 100)}%`;
-      animFrame = requestAnimationFrame(draw);
-    };
-    draw();
-
-    recorder = new MediaRecorder(stream);
-    recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
-    recorder.onstop = () => {
-      stream.getTracks().forEach((t) => t.stop());
-      cancelAnimationFrame(animFrame);
-      clearInterval(timerInterval);
-      if (audioCtx) audioCtx.close();
-      if (meter) meter.style.width = "0%";
-      btn.classList.remove("recording");
-      label.textContent = "Record Again";
-
-      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-      const duration = (Date.now() - startTime) / 1000;
-      document.getElementById(audioId).src = URL.createObjectURL(blob);
-      document.getElementById(previewWrapId).hidden = false;
-      document.getElementById(metaId).textContent = `Recorded: ${duration.toFixed(1)}s`;
-      onComplete(blob, duration);
-    };
-    recorder.start(200);
-    startTime = Date.now();
-    btn.classList.add("recording");
-    label.textContent = "Stop Recording";
-    timerInterval = setInterval(() => {
-      const s = Math.floor((Date.now() - startTime) / 1000);
-      timer.textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
-    }, 500);
   });
+  updateVerifyButton();
 }
 
-/* ==========================================================================
-   Text to Speech
-   ========================================================================== */
-function initTTSStudio() {
-  const textInput = document.getElementById("tts-text-input");
-  textInput.addEventListener("input", () => {
-    document.getElementById("tts-char-counter").textContent = `${textInput.value.length} / 5000`;
-  });
-  document.getElementById("slider-speed").addEventListener("input", (e) => {
-    document.getElementById("val-speed").textContent = `${parseFloat(e.target.value).toFixed(1)}x`;
-  });
-  document.getElementById("slider-volume").addEventListener("input", (e) => {
-    document.getElementById("val-volume").textContent = parseFloat(e.target.value).toFixed(1);
-  });
-  document.getElementById("slider-pitch").addEventListener("input", (e) => {
-    document.getElementById("val-pitch").textContent = e.target.value;
-  });
-  document.getElementById("tts-voice-select").addEventListener("change", updateControlHints);
-  document.getElementById("form-generate-speech").addEventListener("submit", handleTTSGenerate);
-
-  const audio = document.getElementById("tts-audio-element");
-  const disc = document.getElementById("audio-disc-visual");
-  audio.addEventListener("play", () => disc.classList.add("playing"));
-  audio.addEventListener("pause", () => disc.classList.remove("playing"));
-  audio.addEventListener("ended", () => disc.classList.remove("playing"));
-
-  document.getElementById("btn-refresh-history").addEventListener("click", fetchSpeechHistory);
-  document.getElementById("btn-refresh-voices").addEventListener("click", fetchClonedVoices);
-}
-
-/** Not every engine honours every slider; say so instead of silently ignoring it. */
-function updateControlHints() {
-  const voice = STATE.clonedVoices.find((v) => v.id === document.getElementById("tts-voice-select").value);
-  const unsupported = { f5: ["speed", "volume", "pitch"], elevenlabs: ["volume", "pitch"], minimax: [] };
-  const off = voice ? unsupported[voice.engine] || [] : [];
-  ["speed", "volume", "pitch"].forEach((k) => {
-    const slider = document.getElementById(`slider-${k}`);
-    slider.disabled = off.includes(k);
-    slider.title = off.includes(k) ? `Not supported by ${engineName(voice.engine)}` : "";
-  });
-}
-
-async function handleTTSGenerate(e) {
+async function createVoice(e) {
   e.preventDefault();
-  const voiceId = document.getElementById("tts-voice-select").value;
-  const text = document.getElementById("tts-text-input").value.trim();
-  if (!voiceId) return showToast("Choose a ready voice first.", "error");
-  if (!text) return showToast("Enter some text to speak.", "error");
-
-  const btn = document.getElementById("btn-generate-speech");
-  const badge = document.getElementById("player-status-badge");
-  setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Queued…');
-  badge.textContent = "Queued";
-  try {
-    const job = await api("/api/speech/generate", {
-      method: "POST",
-      json: {
-        voice_clone_id: voiceId,
-        text,
-        speed: parseFloat(document.getElementById("slider-speed").value),
-        volume: parseFloat(document.getElementById("slider-volume").value),
-        pitch: parseInt(document.getElementById("slider-pitch").value, 10),
-      },
-    });
-
-    const started = Date.now();
-    let status = job;
-    while (status.status === "queued" || status.status === "processing") {
-      if (Date.now() - started > 10 * 60 * 1000) throw new Error("Timed out waiting for the speech job.");
-      await sleep(2000);
-      status = await api(`/api/speech/jobs/${job.job_id}`);
-      badge.textContent = status.status === "processing" ? "Synthesizing" : "Queued";
-      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${badge.textContent}…`;
+  await busy($("btn-create"), "Uploading…", async (say) => {
+    try {
+      const form = new FormData();
+      form.append("audio", state.sample.blob, state.sample.name);
+      form.append("duration", state.sample.seconds.toFixed(2));
+      const sample = await api("/api/voice-samples", { method: "POST", form });
+      say("Creating…");
+      const voice = await api("/api/voice-clones", {
+        method: "POST",
+        json: { consent_id: state.consent.id, sample_id: sample.id, display_name: $("voice-name").value.trim() },
+      });
+      toast(`"${voice.display_name}" is being prepared.`, "success");
+      resetCreate();
+      await loadVoices();
+    } catch (err) {
+      toast(err.message, "error");
     }
-    if (status.status !== "ready" || !status.audio_url) {
-      throw new Error(status.error_message || "Speech generation failed.");
-    }
-    const voice = STATE.clonedVoices.find((v) => v.id === voiceId);
-    await playAudio(status.audio_url.split("/").pop(), voice ? voice.display_name : "Voice", text);
-    badge.textContent = "Ready";
-    showToast("Speech generated", "success");
-    fetchSpeechHistory();
-  } catch (err) {
-    badge.textContent = "Failed";
-    showToast(err.message, "error");
-  } finally {
-    setButtonBusy(btn, false);
-  }
+  });
 }
 
-/** Audio is private: fetch with the JWT, then play from a blob URL. */
-async function getAudioUrl(audioId) {
-  if (STATE.blobUrls.has(audioId)) return STATE.blobUrls.get(audioId);
-  const res = await api(`/api/audio/${audioId}`, { raw: true });
-  const url = URL.createObjectURL(await res.blob());
-  STATE.blobUrls.set(audioId, url);
-  return url;
+function resetCreate() {
+  Object.assign(state, { sample: null, consent: null, consentBlob: null });
+  $("sample-preview").hidden = true;
+  $("consent-preview").hidden = true;
+  $("consent-result").hidden = true;
+  $("consent-check").checked = false;
+  $("voice-name").value = "";
+  $("btn-step-1").disabled = true;
+  document.querySelectorAll(".btn-record .label").forEach((l, i) => (l.textContent = i ? "Record phrase" : "Record"));
+  document.querySelectorAll(".btn-record .timer").forEach((t) => (t.textContent = "00:00"));
+  goStep(1);
 }
 
-async function playAudio(audioId, voiceName, text) {
+/* ---------------- voices ---------------- */
+async function loadVoices() {
   try {
-    const url = await getAudioUrl(audioId);
-    const audio = document.getElementById("tts-audio-element");
-    audio.src = url;
-    audio.play().catch(() => {});
-    document.getElementById("player-title").textContent = `Voice: ${voiceName}`;
-    document.getElementById("player-subtitle").textContent = `"${text.length > 60 ? text.slice(0, 60) + "…" : text}" · AI-generated`;
-    const dl = document.getElementById("btn-download-mp3");
-    dl.href = url;
-    dl.download = `ai_generated_${audioId}.mp3`;
-    dl.style.display = "inline-flex";
+    state.voices = await api("/api/voice-clones");
   } catch (err) {
-    showToast(err.message, "error");
+    return toast(err.message, "error");
+  }
+  renderVoices();
+  clearTimeout(state.timers.voices);
+  if (state.voices.some((v) => v.status === "queued" || v.status === "processing")) {
+    state.timers.voices = setTimeout(loadVoices, 2000);
   }
 }
 
-async function downloadAudio(audioId) {
-  try {
-    const a = document.createElement("a");
-    a.href = await getAudioUrl(audioId);
-    a.download = `ai_generated_${audioId}.mp3`;
-    a.click();
-  } catch (err) {
-    showToast(err.message, "error");
-  }
-}
+function renderVoices() {
+  const ready = state.voices.filter((v) => v.status === "ready");
+  const select = $("voice-select");
+  const keep = select.value;
+  select.innerHTML = ready.length
+    ? ready.map((v) => `<option value="${v.id}">${esc(v.display_name)}</option>`).join("")
+    : `<option value="">No ready voices yet. Create one in Voices.</option>`;
+  if (ready.some((v) => v.id === keep)) select.value = keep;
 
-async function fetchSpeechHistory() {
-  if (!STATE.user) return;
-  try {
-    STATE.speechHistory = await api("/api/speech/history");
-  } catch (err) {
-    showToast(err.message, "error");
-  }
-  renderSpeechHistory();
-}
-
-function renderSpeechHistory() {
-  const container = document.getElementById("speech-history-list");
-  const overview = document.getElementById("overview-recent-list");
-  document.getElementById("metric-audio-count").textContent = STATE.speechHistory.length;
-
-  if (STATE.speechHistory.length === 0) {
-    const empty = `<div class="empty-state"><i class="fa-solid fa-file-audio fa-2x"></i><p>No audio generated yet.</p></div>`;
-    container.innerHTML = empty;
-    overview.innerHTML = empty;
-    return;
-  }
-  container.innerHTML = "";
-  overview.innerHTML = "";
-
-  const build = (item, withDelete) => {
-    const el = document.createElement("div");
-    el.className = "history-item";
-    el.innerHTML = `
-      <div class="history-details">
-        <div class="history-text">"${escapeHtml(item.text)}"</div>
-        <div class="history-meta">
-          <span><i class="fa-solid fa-microphone"></i> ${escapeHtml(item.voice_name)} · ${escapeHtml(engineName(item.engine))}</span>
-          <span><i class="fa-regular fa-clock"></i> ${new Date(item.created_at).toLocaleString()}</span>
-          ${item.duration_seconds ? `<span>${Number(item.duration_seconds).toFixed(1)}s</span>` : ""}
+  $("voice-list").innerHTML = state.voices.length
+    ? state.voices
+        .map(
+          (v) => `
+      <li class="item">
+        <div class="item-main">
+          <div class="item-title">${esc(v.display_name)}</div>
+          <div class="item-sub">${new Date(v.created_at).toLocaleString()}</div>
+          ${v.error_message ? `<div class="item-error">${esc(v.error_message)}</div>` : ""}
         </div>
-      </div>
-      <div class="history-actions">
-        <button class="btn-refresh btn-play" title="Play"><i class="fa-solid fa-play"></i></button>
-        <button class="btn-refresh btn-download" title="Download MP3"><i class="fa-solid fa-download"></i></button>
-        ${withDelete ? '<button class="btn-refresh btn-delete" title="Delete"><i class="fa-solid fa-trash"></i></button>' : ""}
-      </div>`;
-    el.querySelector(".btn-play").addEventListener("click", () => {
-      switchTab("speech-studio");
-      playAudio(item.id, item.voice_name, item.text);
-    });
-    el.querySelector(".btn-download").addEventListener("click", () => downloadAudio(item.id));
-    if (withDelete) el.querySelector(".btn-delete").addEventListener("click", () => deleteHistoryAudio(item.id));
-    return el;
-  };
-
-  STATE.speechHistory.forEach((item) => container.appendChild(build(item, true)));
-  STATE.speechHistory.slice(0, 3).forEach((item) => overview.appendChild(build(item, false)));
+        <span class="badge ${esc(v.status)}">${esc(v.status)}</span>
+        <button class="icon-btn" data-use="${v.id}" title="Use this voice" aria-label="Use this voice" ${v.status === "ready" ? "" : "disabled"}><i class="fa-solid fa-play"></i></button>
+        <button class="icon-btn" data-delete-voice="${v.id}" title="Delete" aria-label="Delete voice"><i class="fa-solid fa-trash"></i></button>
+      </li>`
+        )
+        .join("")
+    : `<li class="empty">No voices yet.</li>`;
 }
 
-async function deleteHistoryAudio(id, quiet = false) {
+async function deleteVoice(id) {
+  const v = state.voices.find((x) => x.id === id);
+  if (!confirm(`Delete "${v ? v.display_name : "this voice"}"?`)) return;
   try {
-    await api(`/api/speech/audio/${id}`, { method: "DELETE" });
-    if (STATE.blobUrls.has(id)) {
-      URL.revokeObjectURL(STATE.blobUrls.get(id));
-      STATE.blobUrls.delete(id);
-    }
-    if (!quiet) showToast("Audio deleted", "success");
+    await api(`/api/voice-clones/${id}`, { method: "DELETE" });
+    toast("Voice deleted", "success");
   } catch (err) {
-    showToast(err.message, "error");
+    toast(err.message, "error");
   }
-  if (!quiet) fetchSpeechHistory();
+  loadVoices();
 }
 
-/* ==========================================================================
-   Settings
-   ========================================================================== */
-function initSettings() {
-  document.getElementById("btn-delete-all-voices").addEventListener("click", async () => {
-    if (!STATE.clonedVoices.length) return showToast("No voices to delete.", "info");
-    if (!confirm("Permanently delete ALL your cloned voices (including from providers)?")) return;
-    for (const v of [...STATE.clonedVoices]) await deleteClonedVoice(v.id, true);
-    showToast("All cloned voices deleted", "success");
-  });
+/* ---------------- speak ---------------- */
+function switchTab(name) {
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
+}
 
-  document.getElementById("btn-delete-all-audio").addEventListener("click", async () => {
-    if (!STATE.speechHistory.length) return showToast("No audio to delete.", "info");
-    if (!confirm("Permanently delete ALL generated audio files?")) return;
-    for (const item of [...STATE.speechHistory]) await deleteHistoryAudio(item.id, true);
-    await fetchSpeechHistory();
-    showToast("All generated audio deleted", "success");
+function setScript(text) {
+  $("script").value = text.slice(0, MAX_CHARS);
+  $("char-count").textContent = `${$("script").value.length} / ${MAX_CHARS}`;
+}
+
+async function importScript(file) {
+  const isAudio = (file.type || "").startsWith("audio/") || /\.(mp3|m4a|wav|webm|ogg)$/i.test(file.name);
+  await busy($("btn-load-script"), isAudio ? "Transcribing…" : "Loading…", async () => {
+    try {
+      let text;
+      if (isAudio) {
+        if (file.size > MAX_BYTES) throw new Error("Audio must be under 20 MB.");
+        const form = new FormData();
+        form.append("audio", file, file.name);
+        text = (await api("/api/transcribe", { method: "POST", form })).transcript;
+        if (!text) throw new Error("No speech was found in that audio.");
+      } else {
+        text = await file.text();
+        if (/\.(srt|vtt)$/i.test(file.name)) {
+          text = text.split(/\r?\n/).filter((l) => l.trim() && !/^\d+$/.test(l.trim()) && !l.includes("-->") && !l.startsWith("WEBVTT")).join(" ");
+        }
+      }
+      text = text.trim();
+      if (text.length > MAX_CHARS) toast(`Only the first ${MAX_CHARS} characters were loaded.`, "info");
+      setScript(text);
+      toast("Script loaded", "success");
+    } catch (err) {
+      toast(err.message, "error");
+    }
   });
 }
+
+async function generate(e) {
+  e.preventDefault();
+  const voiceId = $("voice-select").value;
+  if (!voiceId) return toast("Create a voice first.", "error");
+  await busy($("btn-generate"), "Queued…", async (say) => {
+    try {
+      let job = await api("/api/speech/generate", {
+        method: "POST",
+        json: { voice_clone_id: voiceId, text: $("script").value, speed: +$("speed").value, volume: +$("volume").value },
+      });
+      const started = Date.now();
+      while (job.status === "queued" || job.status === "processing") {
+        if (Date.now() - started > 15 * 60 * 1000) throw new Error("Timed out waiting for the audio.");
+        await sleep(1500);
+        job = await api(`/api/speech/jobs/${job.job_id}`);
+        say(job.status === "processing" ? "Generating…" : "Queued…");
+      }
+      if (job.status !== "ready") throw new Error(job.error_message || "Generation failed.");
+      const voice = state.voices.find((v) => v.id === voiceId);
+      await play(job.audio_url.split("/").pop(), voice ? voice.display_name : "Voice");
+      loadHistory();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  });
+}
+
+/** Audio is private: fetch it with the JWT and play from a blob URL. */
+async function audioUrl(id) {
+  if (!state.audioUrls.has(id)) {
+    const res = await api(`/api/audio/${id}`, { raw: true });
+    state.audioUrls.set(id, URL.createObjectURL(await res.blob()));
+  }
+  return state.audioUrls.get(id);
+}
+
+async function play(id, title) {
+  try {
+    const url = await audioUrl(id);
+    $("player").hidden = false;
+    $("player-title").textContent = title;
+    $("player-audio").src = url;
+    $("player-audio").play().catch(() => {});
+    $("player-download").href = url;
+    $("player-download").download = `${title.replace(/[^\w-]+/g, "_")}_${id.slice(0, 8)}.mp3`;
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+/* ---------------- history ---------------- */
+async function loadHistory() {
+  try {
+    state.history = await api("/api/speech/history");
+  } catch (err) {
+    return toast(err.message, "error");
+  }
+  $("btn-clear-history").hidden = !state.history.length;
+  $("history-list").innerHTML = state.history.length
+    ? state.history
+        .map(
+          (h) => `
+      <li class="item">
+        <div class="item-main">
+          <div class="item-title">${esc(h.text)}</div>
+          <div class="item-sub">${esc(h.voice_name)} · ${h.duration_seconds ? Number(h.duration_seconds).toFixed(1) + " s · " : ""}${new Date(h.created_at).toLocaleString()}</div>
+        </div>
+        <button class="icon-btn" data-play="${h.id}" title="Play" aria-label="Play"><i class="fa-solid fa-play"></i></button>
+        <button class="icon-btn" data-delete-audio="${h.id}" title="Delete" aria-label="Delete audio"><i class="fa-solid fa-trash"></i></button>
+      </li>`
+        )
+        .join("")
+    : `<li class="empty">Nothing generated yet.</li>`;
+}
+
+async function deleteAudio(id) {
+  await api(`/api/speech/audio/${id}`, { method: "DELETE" });
+  if (state.audioUrls.has(id)) URL.revokeObjectURL(state.audioUrls.get(id));
+  state.audioUrls.delete(id);
+}
+
+/* ---------------- wiring ---------------- */
+document.addEventListener("DOMContentLoaded", async () => {
+  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+  $("btn-logout").addEventListener("click", async () => {
+    await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+    signOut();
+  });
+
+  // auth
+  $("btn-auth-switch").addEventListener("click", () => setAuthMode(!registering));
+  $("auth-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    busy($("btn-auth"), registering ? "Creating…" : "Signing in…", async () => {
+      try {
+        const r = await api(`/api/auth/${registering ? "register" : "login"}`, {
+          method: "POST",
+          json: { email: $("auth-email").value.trim(), password: $("auth-password").value },
+        });
+        await signIn(r.token, r.user);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    });
+  });
+
+  // create a voice
+  recorder($("btn-record-sample"), $("sample-meter"), (blob, s) => setSample(blob, `sample.${extFor(blob.type)}`, s));
+  $("sample-file").addEventListener("change", (e) => {
+    if (e.target.files[0]) loadSampleFile(e.target.files[0]);
+    e.target.value = "";
+  });
+  $("btn-step-1").addEventListener("click", () => goStep(2));
+  recorder($("btn-record-consent"), $("consent-meter"), (blob) => {
+    state.consentBlob = blob;
+    $("consent-audio").src = URL.createObjectURL(blob);
+    $("consent-preview").hidden = false;
+    $("consent-result").hidden = true;
+    updateVerifyButton();
+  });
+  $("btn-new-phrase").addEventListener("click", newPhrase);
+  $("consent-check").addEventListener("change", updateVerifyButton);
+  $("btn-step-2").addEventListener("click", verifyConsent);
+  document.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => goStep(Number(b.dataset.back))));
+  $("step-3").addEventListener("submit", createVoice);
+
+  // lists (event delegation)
+  $("btn-refresh-voices").addEventListener("click", loadVoices);
+  $("voice-list").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.use) {
+      switchTab("speak");
+      $("voice-select").value = b.dataset.use;
+      $("script").focus();
+    } else if (b.dataset.deleteVoice) deleteVoice(b.dataset.deleteVoice);
+  });
+  $("history-list").addEventListener("click", async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.play) {
+      const h = state.history.find((x) => x.id === b.dataset.play);
+      play(h.id, h.voice_name);
+    } else if (b.dataset.deleteAudio) {
+      try {
+        await deleteAudio(b.dataset.deleteAudio);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+      loadHistory();
+    }
+  });
+  $("btn-clear-history").addEventListener("click", async () => {
+    if (!confirm("Delete all generated audio?")) return;
+    await Promise.allSettled(state.history.map((h) => deleteAudio(h.id)));
+    $("player").hidden = true;
+    loadHistory();
+  });
+
+  // speak
+  $("script").addEventListener("input", () => ($("char-count").textContent = `${$("script").value.length} / ${MAX_CHARS}`));
+  $("btn-load-script").addEventListener("click", () => $("script-file").click());
+  $("script-file").addEventListener("change", (e) => {
+    if (e.target.files[0]) importScript(e.target.files[0]);
+    e.target.value = "";
+  });
+  $("speed").addEventListener("input", (e) => ($("speed-out").textContent = `${(+e.target.value).toFixed(1)}×`));
+  $("volume").addEventListener("input", (e) => ($("volume-out").textContent = (+e.target.value).toFixed(1)));
+  $("speak-form").addEventListener("submit", generate);
+
+  // start
+  loadEngine();
+  if (!state.token) return showAuth();
+  try {
+    await signIn(state.token, await api("/api/auth/me"));
+  } catch (err) {
+    if (err.status !== 401) toast(err.message, "error");
+    showAuth();
+  }
+});

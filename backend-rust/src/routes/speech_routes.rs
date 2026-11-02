@@ -18,6 +18,7 @@ use crate::{
         GenerateSpeechRequest, GeneratedAudio, SpeechHistoryItem, SpeechJob, SpeechJobResponse, SpeechWorkerJob,
         VoiceClone, CLONE_COLUMNS,
     },
+    routes::meta_routes::require_engine,
     storage,
 };
 
@@ -44,22 +45,17 @@ pub async fn generate_speech(
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| ApiError::not_found("Voice clone not found"))?;
+    require_engine(&state).await?;
     if clone.status != "ready" {
         return Err(ApiError::bad_request(format!("Voice is not ready yet (status: {})", clone.status)));
     }
 
-    let sample_key: String = sqlx::query_scalar("SELECT storage_key FROM voice_samples WHERE id = $1")
-        .bind(clone.sample_id)
-        .fetch_one(&state.db)
-        .await?;
-
     let speed = body.speed.unwrap_or(1.0).clamp(0.5, 2.0);
     let volume = body.volume.unwrap_or(1.0).clamp(0.1, 2.0);
-    let pitch = body.pitch.unwrap_or(0).clamp(-12, 12);
 
     let job: SpeechJob = sqlx::query_as(
-        "INSERT INTO speech_jobs (id, user_id, voice_clone_id, text, speed, volume, pitch, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued') RETURNING id, status, error_message",
+        "INSERT INTO speech_jobs (id, user_id, voice_clone_id, text, speed, volume, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'queued') RETURNING id, status, error_message",
     )
     .bind(Uuid::new_v4())
     .bind(auth.user_id)
@@ -67,21 +63,16 @@ pub async fn generate_speech(
     .bind(text)
     .bind(speed)
     .bind(volume)
-    .bind(pitch)
     .fetch_one(&state.db)
     .await?;
 
     let worker_job = SpeechWorkerJob {
         job_id: job.id,
         user_id: auth.user_id,
-        engine: clone.engine.clone(),
         voice_id: clone.voice_id.clone(),
-        provider_voice_id: clone.provider_voice_id.clone(),
-        sample_storage_path: sample_key,
         text: text.to_string(),
         speed,
         volume,
-        pitch,
     };
     if let Err(e) = enqueue(&state.redis, "speech_jobs", &worker_job).await {
         sqlx::query("UPDATE speech_jobs SET status = 'failed', error_message = 'Queue unavailable' WHERE id = $1")
@@ -96,7 +87,7 @@ pub async fn generate_speech(
         &state.db,
         Some(auth.user_id),
         "speech_generation_queued",
-        json!({ "job_id": job.id, "engine": clone.engine, "chars": text.chars().count() }),
+        json!({ "job_id": job.id, "chars": text.chars().count() }),
     )
     .await;
 
@@ -132,7 +123,7 @@ pub async fn get_speech_job_status(
 pub async fn get_speech_history(auth: AuthUser, State(state): State<AppState>) -> ApiResult<Vec<SpeechHistoryItem>> {
     let mut rows: Vec<SpeechHistoryItem> = sqlx::query_as(
         "SELECT ga.id, ga.speech_job_id, vc.id AS voice_clone_id, vc.display_name AS voice_name,
-                vc.engine, sj.text, ga.duration_seconds, ga.created_at
+                sj.text, ga.duration_seconds, ga.created_at
          FROM generated_audio ga
          JOIN speech_jobs sj ON ga.speech_job_id = sj.id
          JOIN voice_clones vc ON sj.voice_clone_id = vc.id

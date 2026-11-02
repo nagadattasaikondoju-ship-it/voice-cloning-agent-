@@ -12,10 +12,12 @@ use crate::{
     models::{
         CloneWorkerJob, CreateVoiceCloneRequest, DeleteVoiceWorkerJob, VoiceClone, VoiceSample, CLONE_COLUMNS,
     },
-    routes::read_audio_upload,
+    routes::{meta_routes::require_engine, read_audio_upload},
     storage,
 };
 
+/// Chatterbox needs more than 5 s of speech; silence is trimmed by the worker.
+const MIN_SAMPLE_SECONDS: f64 = 6.0;
 const SAMPLE_COLUMNS: &str = "id, user_id, storage_key, mime_type, duration_seconds, file_size_bytes, created_at";
 
 pub async fn upload_voice_sample(
@@ -28,8 +30,8 @@ pub async fn upload_voice_sample(
         .ok_or_else(|| ApiError::bad_request("Unsupported audio format (use mp3, m4a, wav, webm or ogg)"))?;
 
     let duration: f64 = upload.fields.get("duration").and_then(|d| d.parse().ok()).unwrap_or(0.0);
-    if duration > 0.0 && !(5.0..=300.0).contains(&duration) {
-        return Err(ApiError::bad_request("Voice samples must be between 5 seconds and 5 minutes long"));
+    if duration > 0.0 && !(MIN_SAMPLE_SECONDS..=300.0).contains(&duration) {
+        return Err(ApiError::bad_request("Voice samples must be between 6 seconds and 5 minutes long"));
     }
 
     let sample_id = Uuid::new_v4();
@@ -72,10 +74,7 @@ pub async fn create_voice_clone(
     if display_name.is_empty() || display_name.chars().count() > 80 {
         return Err(ApiError::bad_request("Voice name must be 1–80 characters"));
     }
-    let engine = body.engine.unwrap_or_else(|| "f5".to_string()).to_lowercase();
-    if !state.config.engine_enabled(&engine) {
-        return Err(ApiError::bad_request(format!("Voice engine '{engine}' is not available on this server")));
-    }
+    require_engine(&state).await?;
 
     // 1. Consent must belong to this user and have passed speech verification.
     let verified: Option<bool> = sqlx::query_scalar("SELECT verified FROM consents WHERE id = $1 AND user_id = $2")
@@ -99,12 +98,11 @@ pub async fn create_voice_clone(
     .await?
     .ok_or_else(|| ApiError::not_found("Voice sample not found"))?;
 
-    // MiniMax voice ids: 8–256 chars, start with a letter, letters/digits/_ only.
     let voice_id = format!("voice_{}", &Uuid::new_v4().simple().to_string()[..20]);
 
     let clone: VoiceClone = sqlx::query_as(&format!(
         "INSERT INTO voice_clones (id, user_id, consent_id, sample_id, display_name, voice_id, engine, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued') RETURNING {CLONE_COLUMNS}"
+         VALUES ($1, $2, $3, $4, $5, $6, 'chatterbox', 'queued') RETURNING {CLONE_COLUMNS}"
     ))
     .bind(Uuid::new_v4())
     .bind(auth.user_id)
@@ -112,17 +110,14 @@ pub async fn create_voice_clone(
     .bind(sample.id)
     .bind(display_name)
     .bind(&voice_id)
-    .bind(&engine)
     .fetch_one(&state.db)
     .await?;
 
     let job = CloneWorkerJob {
         job_id: clone.id,
         user_id: auth.user_id,
-        engine: engine.clone(),
+        voice_id,
         sample_storage_path: sample.storage_key,
-        requested_voice_id: voice_id,
-        display_name: clone.display_name.clone(),
     };
     if let Err(e) = enqueue(&state.redis, "voice_clone_jobs", &job).await {
         sqlx::query("UPDATE voice_clones SET status = 'failed', error_message = 'Queue unavailable' WHERE id = $1")
@@ -137,7 +132,7 @@ pub async fn create_voice_clone(
         &state.db,
         Some(auth.user_id),
         "voice_clone_queued",
-        json!({ "clone_id": clone.id, "engine": engine, "consent_id": body.consent_id }),
+        json!({ "clone_id": clone.id, "consent_id": body.consent_id }),
     )
     .await;
     Ok(Json(clone))
@@ -184,21 +179,16 @@ pub async fn delete_voice_clone(
     .await?
     .ok_or_else(|| ApiError::not_found("Voice clone not found or already deleted"))?;
 
-    let job = DeleteVoiceWorkerJob {
-        user_id: auth.user_id,
-        engine: clone.engine.clone(),
-        voice_id: clone.voice_id.clone(),
-        provider_voice_id: clone.provider_voice_id.clone(),
-    };
+    let job = DeleteVoiceWorkerJob { user_id: auth.user_id, voice_id: clone.voice_id.clone() };
     if let Err(e) = enqueue(&state.redis, "delete_voice_jobs", &job).await {
-        tracing::error!("Failed to enqueue provider delete for {}: {e:?}", clone.id);
+        tracing::error!("Failed to enqueue reference delete for {}: {e:?}", clone.id);
     }
 
     record_audit_log(
         &state.db,
         Some(auth.user_id),
         "voice_clone_deleted",
-        json!({ "clone_id": clone.id, "engine": clone.engine }),
+        json!({ "clone_id": clone.id }),
     )
     .await;
     Ok(Json(json!({ "message": "Voice clone deleted" })))

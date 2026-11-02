@@ -84,9 +84,9 @@ body.menu-open {
 .header {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   width: 100%;
-  max-width: 720px;
+  max-width: 1100px;
   gap: clamp(18px, 2.8vw, 28px);
   flex-shrink: 0;
   animation: slideDown 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -129,55 +129,6 @@ body.menu-open {
   display: block;
 }
 
-/* Nav Pill */
-.nav-pill {
-  background-color: #ffffff;
-  height: clamp(44px, 5.2vw, 48px);
-  max-width: 430px;
-  flex: 1;
-  padding: 4px 8px;
-  border-radius: 999px;
-  box-shadow: var(--nav-shadow);
-  display: flex;
-  align-items: center;
-  justify-content: space-around;
-}
-
-.nav-link {
-  font-family: var(--font-sans);
-  font-weight: 500;
-  font-size: clamp(13px, 1.4vw, 15px);
-  letter-spacing: -0.01em;
-  color: var(--nav-text);
-  text-decoration: none;
-  position: relative;
-  padding: 6px 12px;
-  opacity: 0.5;
-  transition: opacity 0.2s ease;
-}
-
-.nav-link:hover {
-  opacity: 0.75;
-}
-
-.nav-link.active {
-  opacity: 1;
-}
-
-/* Active indicator: three 3x3px black dots under label */
-.nav-link.active::after {
-  content: "";
-  position: absolute;
-  bottom: 5px;
-  left: 50%;
-  width: 3px;
-  height: 3px;
-  background-color: #000000;
-  border-radius: 50%;
-  transform: translateX(-50%);
-  box-shadow: -5px 0 0 #000000, 5px 0 0 #000000;
-}
-
 /* Sign In Button */
 .sign-in-btn {
   background-color: var(--pill-dark);
@@ -203,65 +154,6 @@ body.menu-open {
   transform: translateY(-1px);
 }
 
-/* Burger Button (hidden on desktop) */
-.burger-btn {
-  display: none;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background-color: #28282a;
-  border: none;
-  cursor: pointer;
-  padding: 0;
-  position: relative;
-  flex-shrink: 0;
-  transition: background-color 0.25s ease;
-}
-
-.burger-bar {
-  display: block;
-  position: absolute;
-  left: 15px;
-  width: 18px;
-  height: 1.5px;
-  background-color: #ffffff;
-  border-radius: 2px;
-  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.3s ease, opacity 0.2s ease;
-}
-
-.burger-bar:nth-child(1) {
-  top: 17px;
-}
-
-.burger-bar:nth-child(2) {
-  top: 23px;
-}
-
-.burger-bar:nth-child(3) {
-  top: 29px;
-}
-
-/* Burger Open State */
-.burger-btn.open {
-  background-color: #ffffff;
-}
-
-.burger-btn.open .burger-bar {
-  background-color: #000000;
-}
-
-.burger-btn.open .burger-bar:nth-child(1) {
-  transform: translateY(6px) rotate(45deg);
-}
-
-.burger-btn.open .burger-bar:nth-child(2) {
-  opacity: 0;
-}
-
-.burger-btn.open .burger-bar:nth-child(3) {
-  transform: translateY(-6px) rotate(-45deg);
-}
-
 /* ==========================================================================
    2. Hero (Center)
    ========================================================================== */
@@ -283,64 +175,6 @@ body.menu-open {
   align-items: center;
   --trust-size: clamp(36px, 4.5vw, 42px);
   margin-bottom: clamp(16px, 2.5vh, 26px);
-}
-
-.trust-avatars {
-  display: inline-flex;
-  align-items: center;
-}
-
-.trust-avatar {
-  width: var(--trust-size);
-  height: var(--trust-size);
-  background-color: var(--trust-bg);
-  border: 1px solid var(--trust-border);
-  padding: 5px;
-  border-radius: 50%;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 0.35s ease;
-  position: relative;
-}
-
-.avatar-inner {
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  background-color: #ffffff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #111111;
-  font-size: calc(var(--trust-size) * 0.34);
-}
-
-.avatar-1 {
-  z-index: 1;
-}
-
-.avatar-1:hover {
-  transform: translateY(-2px);
-}
-
-.avatar-2 {
-  z-index: 2;
-  margin-left: calc(var(--trust-size) * -0.42);
-}
-
-.avatar-2:hover {
-  transform: translateY(-4px);
-}
-
-.avatar-3 {
-  z-index: 4;
-  margin-left: calc(var(--trust-size) * -0.42);
-}
-
-.avatar-3:hover {
-  transform: translateY(-2px);
 }
 
 /* Trust Pill */
@@ -537,128 +371,6 @@ body.menu-open {
 }
 
 /* ==========================================================================
-   Mobile Overlay & Menu Sheet
-   ========================================================================== */
-.mobile-overlay {
-  position: fixed;
-  inset: 0;
-  background-color: rgba(0, 0, 0, 0.62);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  z-index: 100;
-  animation: overlayIn 0.28s ease forwards;
-}
-
-@keyframes overlayIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-.mobile-sheet {
-  position: fixed;
-  top: 76px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(92%, 400px);
-  background-color: #ffffff;
-  border-radius: 28px;
-  padding: 22px 18px 20px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
-  z-index: 101;
-  animation: menuIn 0.38s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-}
-
-@keyframes menuIn {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -14px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, 0) scale(1);
-  }
-}
-
-.mobile-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.mobile-nav-link {
-  font-family: var(--font-sans);
-  font-size: 16px;
-  font-weight: 500;
-  color: var(--nav-text);
-  text-decoration: none;
-  padding: 12px 16px;
-  text-align: center;
-  position: relative;
-  border-radius: 12px;
-  opacity: 0.65;
-  transition: opacity 0.2s ease, background-color 0.2s ease;
-  animation: linkIn 0.3s ease both;
-}
-
-.mobile-nav-link:hover {
-  opacity: 0.9;
-  background-color: rgba(0, 0, 0, 0.04);
-}
-
-.mobile-nav-link.active {
-  opacity: 1;
-}
-
-/* Active indicator on mobile: three dots at bottom: 8px */
-.mobile-nav-link.active::after {
-  content: "";
-  position: absolute;
-  bottom: 8px;
-  left: 50%;
-  width: 3px;
-  height: 3px;
-  background-color: #000000;
-  border-radius: 50%;
-  transform: translateX(-50%);
-  box-shadow: -5px 0 0 #000000, 5px 0 0 #000000;
-}
-
-.mobile-sign-in-btn {
-  background-color: var(--pill-dark);
-  color: var(--sign-in-text);
-  font-family: var(--font-sans);
-  font-size: 15px;
-  font-weight: 500;
-  text-decoration: none;
-  text-align: center;
-  padding: 14px;
-  border-radius: 999px;
-  margin-top: 10px;
-  display: block;
-  transition: background-color 0.2s ease, color 0.2s ease;
-}
-
-.mobile-sign-in-btn:hover {
-  background-color: #323234;
-  color: #ffffff;
-}
-
-@keyframes linkIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* ==========================================================================
    Responsive Breakpoints
    ========================================================================== */
 @media (max-width: 720px) {
@@ -667,19 +379,9 @@ body.menu-open {
     max-width: 100%;
   }
 
-  .nav-pill,
-  .sign-in-btn {
-    display: none;
-  }
-
   .logo-btn {
     width: 48px;
     height: 48px;
-  }
-
-  .burger-btn {
-    display: grid;
-    place-items: center;
   }
 
   .headline {
@@ -691,6 +393,7 @@ body.menu-open {
     grid-template-columns: repeat(2, 1fr);
     gap: 16px;
   }
+
 }
 
 @media (max-width: 420px) {
@@ -706,6 +409,7 @@ body.menu-open {
     letter-spacing: -0.09em;
     line-height: 1.04;
   }
+
 }
 
 @media (max-height: 700px) {
@@ -722,6 +426,7 @@ body.menu-open {
     margin-top: clamp(8px, 1.6vh, 14px);
     margin-bottom: clamp(10px, 1.8vh, 16px);
   }
+
 }
 
 /* ==========================================================================
@@ -749,4 +454,5 @@ body.menu-open {
   .headline {
     color: #ffffff;
   }
+
 }
