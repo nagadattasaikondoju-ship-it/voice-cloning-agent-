@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: voiceclone_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: voiceclone
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d voiceclone"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: voiceclone_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend-rust:
+    build:
+      context: ./backend-rust
+      dockerfile: Dockerfile
+    container_name: voiceclone_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/voiceclone
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-super_secret_jwt_key_intelligence_evolve_2026}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
+      STORAGE_DIR: /app/private_storage
+      PORT: 8080
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5500,http://127.0.0.1:5500,http://localhost:8080}
+    volumes:
+      - private_storage:/app/private_storage
+
+  worker-python:
+    build:
+      context: ./worker-python
+      dockerfile: Dockerfile
+    container_name: voiceclone_worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/voiceclone
+      REDIS_URL: redis://redis:6379/0
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
+      STORAGE_DIR: /app/private_storage
+    volumes:
+      - private_storage:/app/private_storage
+
+volumes:
+  postgres_data:
+  redis_data:
+  private_storage:

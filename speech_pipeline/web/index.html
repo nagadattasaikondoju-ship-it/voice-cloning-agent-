@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Speech Pipeline | Local-First Whisper & Silero VAD</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #090d16;
+      --bg-card: rgba(18, 24, 38, 0.7);
+      --bg-card-hover: rgba(28, 36, 56, 0.85);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-accent: rgba(99, 102, 241, 0.35);
+      --accent: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.25);
+      --accent-cyan: #06b6d4;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+      --font-main: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      background-image: 
+        radial-gradient(circle at 15% 10%, rgba(99, 102, 241, 0.12) 0%, transparent 40%),
+        radial-gradient(circle at 85% 90%, rgba(6, 182, 212, 0.08) 0%, transparent 45%);
+      background-attachment: fixed;
+      color: var(--text-main);
+      font-family: var(--font-main);
+      min-height: 100vh;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 36px 24px 60px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 32px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .logo-badge {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-cyan));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 20px var(--accent-glow);
+    }
+
+    .logo-badge svg {
+      width: 24px;
+      height: 24px;
+      fill: #ffffff;
+    }
+
+    .brand h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand p {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent-emerald);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 10px var(--accent-emerald);
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 460px 1fr;
+      gap: 28px;
+    }
+
+    @media (max-width: 980px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--bg-card);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      transition: all 0.25s ease;
+    }
+
+    .card-title {
+      font-size: 17px;
+      font-weight: 600;
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .card-title svg {
+      width: 18px;
+      height: 18px;
+      color: var(--accent);
+    }
+
+    /* Tabs for Record vs Upload */
+    .tab-group {
+      display: flex;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 4px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      border: 1px solid var(--border-color);
+    }
+
+    .tab-btn {
+      flex: 1;
+      padding: 10px 16px;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: all 0.2s ease;
+    }
+
+    .tab-btn.active {
+      background: var(--accent);
+      color: #ffffff;
+      box-shadow: 0 4px 12px var(--accent-glow);
+    }
+
+    /* Drop Zone */
+    .dropzone {
+      border: 2px dashed rgba(255, 255, 255, 0.12);
+      border-radius: var(--radius-md);
+      padding: 32px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      background: rgba(0, 0, 0, 0.15);
+    }
+
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(99, 102, 241, 0.05);
+    }
+
+    .dropzone-icon {
+      width: 44px;
+      height: 44px;
+      margin: 0 auto 12px;
+      color: var(--text-muted);
+    }
+
+    .dropzone-text {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .dropzone-sub {
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    /* Recorder Section */
+    .record-box {
+      text-align: center;
+      padding: 24px 16px;
+      border-radius: var(--radius-md);
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--border-color);
+    }
+
+    .record-btn {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      border: 4px solid rgba(239, 68, 68, 0.2);
+      color: white;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 0 24px rgba(239, 68, 68, 0.4);
+      transition: all 0.25s ease;
+      margin-bottom: 16px;
+    }
+
+    .record-btn.recording {
+      animation: pulse-ring 1.5s infinite;
+      background: linear-gradient(135deg, #f43f5e, #be123c);
+    }
+
+    @keyframes pulse-ring {
+      0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+      70% { transform: scale(1.06); box-shadow: 0 0 0 16px rgba(239, 68, 68, 0); }
+      100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    }
+
+    .record-timer {
+      font-family: var(--font-mono);
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+
+    .record-hint {
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+
+    canvas#visualizer {
+      width: 100%;
+      height: 60px;
+      border-radius: 8px;
+      margin-top: 14px;
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    /* Options & Run Button */
+    .form-group {
+      margin-top: 18px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    select, input[type="text"] {
+      width: 100%;
+      padding: 10px 14px;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      color: var(--text-main);
+      font-family: var(--font-main);
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    select:focus, input[type="text"]:focus {
+      border-color: var(--accent);
+    }
+
+    .btn-primary {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, var(--accent), #4f46e5);
+      border: none;
+      border-radius: var(--radius-md);
+      color: #ffffff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      box-shadow: 0 4px 18px var(--accent-glow);
+      transition: all 0.2s ease;
+      margin-top: 20px;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 24px rgba(99, 102, 241, 0.4);
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* Results Column */
+    .results-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .meta-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 14px 18px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+    }
+
+    .meta-item {
+      display: flex;
+      flex-direction: column;
+      font-size: 12px;
+    }
+
+    .meta-label {
+      color: var(--text-dim);
+      font-weight: 500;
+    }
+
+    .meta-val {
+      color: var(--text-main);
+      font-weight: 600;
+      font-family: var(--font-mono);
+    }
+
+    /* Audio Player */
+    .player-container {
+      background: rgba(0, 0, 0, 0.25);
+      padding: 14px 18px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-color);
+    }
+
+    audio {
+      width: 100%;
+      height: 38px;
+      outline: none;
+    }
+
+    /* Transcript Box */
+    .transcript-box {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      font-size: 15px;
+      line-height: 1.7;
+      max-height: 240px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+
+    .transcript-box p {
+      margin-bottom: 14px;
+    }
+
+    .transcript-box p:last-child {
+      margin-bottom: 0;
+    }
+
+    /* Segments Timeline */
+    .segments-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 380px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .segment-item {
+      padding: 12px 16px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+
+    .segment-item:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--border-accent);
+      transform: translateX(3px);
+    }
+
+    .segment-item.active {
+      background: rgba(99, 102, 241, 0.15);
+      border-color: var(--accent);
+    }
+
+    .segment-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+
+    .time-badge {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: rgba(99, 102, 241, 0.15);
+      color: #a5b4fc;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-weight: 500;
+    }
+
+    .conf-badge {
+      font-size: 11px;
+      color: var(--accent-emerald);
+      font-family: var(--font-mono);
+    }
+
+    .segment-text {
+      font-size: 14px;
+      color: #e2e8f0;
+    }
+
+    .word-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 8px;
+    }
+
+    .word-chip {
+      font-size: 11px;
+      padding: 2px 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 4px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    /* Action buttons */
+    .actions-bar {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .btn-secondary {
+      padding: 8px 14px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: #ffffff;
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-dim);
+    }
+
+    .spinner {
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(255, 255, 255, 0.2);
+      border-top-color: #ffffff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <div class="logo-badge">
+          <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zm5.3 6a.75.75 0 0 0-1.5 0 3.8 3.8 0 0 1-7.6 0 .75.75 0 0 0-1.5 0 5.3 5.3 0 0 0 4.55 5.24V16.5h-2a.75.75 0 0 0 0 1.5h5.5a.75.75 0 0 0 0-1.5h-2v-3.26A5.3 5.3 0 0 0 17.3 8zM7.5 19.5a.75.75 0 0 0 0 1.5h9a.75.75 0 0 0 0-1.5h-9z"/></svg>
+        </div>
+        <div>
+          <h1>Local Speech Pipeline</h1>
+          <p>Silero VAD 5s-Chunking & faster-whisper Timestamp Restoration</p>
+        </div>
+      </div>
+      <div class="status-pill">
+        <span class="status-dot"></span>
+        <span id="engineStatus">Ready</span>
+      </div>
+    </header>
+
+    <div class="main-grid">
+      <!-- Left Column: Audio Input & Processing -->
+      <div class="card">
+        <h2 class="card-title">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+          Audio Input
+        </h2>
+
+        <div class="tab-group">
+          <button class="tab-btn active" id="tabUpload" onclick="switchTab('upload')">Upload File</button>
+          <button class="tab-btn" id="tabRecord" onclick="switchTab('record')">Microphone</button>
+        </div>
+
+        <!-- File Upload Form -->
+        <div id="uploadView">
+          <div class="dropzone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+            <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+            <div class="dropzone-text" id="fileNameDisplay">Choose audio file or drag & drop</div>
+            <div class="dropzone-sub">WAV, MP3, M4A, OGG, WEBM up to 100MB</div>
+            <input type="file" id="fileInput" accept="audio/*" style="display:none" onchange="handleFileSelect(event)">
+          </div>
+        </div>
+
+        <!-- Live Microphone Form -->
+        <div id="recordView" style="display:none">
+          <div class="record-box">
+            <button class="record-btn" id="recordBtn" onclick="toggleRecording()">
+              <svg id="recordIcon" width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+            </button>
+            <div class="record-timer" id="recordTimer">00:00</div>
+            <div class="record-hint" id="recordHint">Click red button to start recording</div>
+            <canvas id="visualizer"></canvas>
+          </div>
+        </div>
+
+        <!-- Language and Pipeline Controls -->
+        <div class="form-group">
+          <label for="languageSelect">Spoken Language</label>
+          <select id="languageSelect">
+            <option value="">Auto-Detect (Whisper Probability)</option>
+            <option value="en">English (en)</option>
+            <option value="es">Spanish (es)</option>
+            <option value="fr">French (fr)</option>
+            <option value="de">German (de)</option>
+            <option value="it">Italian (it)</option>
+            <option value="hi">Hindi (hi)</option>
+            <option value="zh">Chinese (zh)</option>
+            <option value="ja">Japanese (ja)</option>
+          </select>
+        </div>
+
+        <button class="btn-primary" id="processBtn" onclick="startIngestAndTranscription()">
+          <span id="btnText">Transcribe Audio</span>
+          <div class="spinner" id="btnSpinner" style="display:none"></div>
+        </button>
+      </div>
+
+      <!-- Right Column: Player & Timestamped Transcript -->
+      <div class="card results-panel">
+        <h2 class="card-title">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+          Transcription Output
+        </h2>
+
+        <div id="resultsPlaceholder" class="empty-state">
+          Upload an audio clip or record from your microphone to view the timeline transcript.
+        </div>
+
+        <div id="resultsContent" style="display:none; flex-direction: column; gap: 18px;">
+          <!-- Telemetry Bar -->
+          <div class="meta-bar">
+            <div class="meta-item">
+              <span class="meta-label">Status</span>
+              <span class="meta-val" id="metaStatus">-</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Duration</span>
+              <span class="meta-val" id="metaDuration">-</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Language</span>
+              <span class="meta-val" id="metaLanguage">-</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Segments</span>
+              <span class="meta-val" id="metaSegments">-</span>
+            </div>
+          </div>
+
+          <!-- Audio Player -->
+          <div class="player-container">
+            <audio id="audioPlayer" controls></audio>
+          </div>
+
+          <!-- Full Transcript -->
+          <div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
+              <span style="font-size:13px; font-weight:600; color:var(--text-muted)">Full Transcript</span>
+              <div class="actions-bar" style="margin-top:0">
+                <button class="btn-secondary" onclick="copyTranscript()">Copy Text</button>
+                <button class="btn-secondary" onclick="downloadTranscript()">Download .TXT</button>
+                <button class="btn-secondary" onclick="downloadJson()">Export JSON</button>
+              </div>
+            </div>
+            <div class="transcript-box" id="fullTranscriptText"></div>
+          </div>
+
+          <!-- Segments Timeline -->
+          <div>
+            <span style="font-size:13px; font-weight:600; color:var(--text-muted); display:block; margin-bottom: 8px;">Timestamped Segments (Click to Seek)</span>
+            <div class="segments-list" id="segmentsList"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let activeFile = null;
+    let recordedBlob = null;
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let recordInterval = null;
+    let recordSeconds = 0;
+    let pollInterval = null;
+    let currentRecordingId = null;
+    let currentData = null;
+
+    // Tab Switching
+    function switchTab(mode) {
+      document.getElementById('tabUpload').classList.toggle('active', mode === 'upload');
+      document.getElementById('tabRecord').classList.toggle('active', mode === 'record');
+      document.getElementById('uploadView').style.display = mode === 'upload' ? 'block' : 'none';
+      document.getElementById('recordView').style.display = mode === 'record' ? 'block' : 'none';
+    }
+
+    // Drag & Drop
+    const dropZone = document.getElementById('dropZone');
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) {
+        handleFile(e.dataTransfer.files[0]);
+      }
+    });
+
+    function handleFileSelect(e) {
+      if (e.target.files.length > 0) {
+        handleFile(e.target.files[0]);
+      }
+    }
+
+    function handleFile(file) {
+      activeFile = file;
+      recordedBlob = null;
+      document.getElementById('fileNameDisplay').textContent = `${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`;
+    }
+
+    // Live Microphone Recording
+    async function toggleRecording() {
+      const btn = document.getElementById('recordBtn');
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        btn.classList.remove('recording');
+        clearInterval(recordInterval);
+        document.getElementById('recordHint').textContent = 'Recording saved. Ready to transcribe.';
+      } else {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          setupVisualizer(stream);
+          audioChunks = [];
+          mediaRecorder = new MediaRecorder(stream);
+          mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+          mediaRecorder.onstop = () => {
+            recordedBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            activeFile = null;
+            document.getElementById('recordHint').textContent = `Recorded ${(recordedBlob.size / 1024).toFixed(1)} KB clip.`;
+          };
+          mediaRecorder.start();
+          btn.classList.add('recording');
+          recordSeconds = 0;
+          document.getElementById('recordTimer').textContent = '00:00';
+          recordInterval = setInterval(() => {
+            recordSeconds++;
+            const mins = String(Math.floor(recordSeconds / 60)).padStart(2, '0');
+            const secs = String(recordSeconds % 60).padStart(2, '0');
+            document.getElementById('recordTimer').textContent = `${mins}:${secs}`;
+          }, 1000);
+          document.getElementById('recordHint').textContent = 'Recording in progress... Click to stop.';
+        } catch (err) {
+          alert('Microphone access denied or unavailable: ' + err.message);
+        }
+      }
+    }
+
+    function setupVisualizer(stream) {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 64;
+      source.connect(analyser);
+
+      const canvas = document.getElementById('visualizer');
+      const ctx = canvas.getContext('2d');
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      function draw() {
+        if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+        requestAnimationFrame(draw);
+        analyser.getByteFrequencyData(dataArray);
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const barWidth = (canvas.width / bufferLength) * 1.5;
+        let x = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          const barHeight = (dataArray[i] / 255) * canvas.height;
+          ctx.fillStyle = `rgb(99, 102, 241)`;
+          ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+          x += barWidth + 2;
+        }
+      }
+      draw();
+    }
+
+    // Pipeline Submission & Polling
+    async function startIngestAndTranscription() {
+      const processBtn = document.getElementById('processBtn');
+      const btnText = document.getElementById('btnText');
+      const btnSpinner = document.getElementById('btnSpinner');
+      const lang = document.getElementById('languageSelect').value;
+
+      let fileToUpload = activeFile;
+      if (!fileToUpload && recordedBlob) {
+        fileToUpload = new File([recordedBlob], 'live_recording.webm', { type: 'audio/webm' });
+      }
+
+      if (!fileToUpload) {
+        alert('Please choose an audio file or record from microphone first.');
+        return;
+      }
+
+      try {
+        processBtn.disabled = true;
+        btnText.textContent = 'Uploading & Converting...';
+        btnSpinner.style.display = 'block';
+
+        const formData = new FormData();
+        formData.append('file', fileToUpload);
+        if (lang) formData.append('language', lang);
+
+        const uploadRes = await fetch('/api/v1/recordings', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!uploadRes.ok) {
+          const errData = await uploadRes.json();
+          throw new Error(errData.detail || 'Upload failed');
+        }
+
+        const uploadData = await uploadRes.json();
+        currentRecordingId = uploadData.recording_id;
+
+        // Trigger processing
+        btnText.textContent = 'Running Silero VAD & Whisper...';
+        const procRes = await fetch(`/api/v1/recordings/${currentRecordingId}/process${lang ? '?language=' + encodeURIComponent(lang) : ''}`, {
+          method: 'POST'
+        });
+
+        if (!procRes.ok) {
+          throw new Error('Failed to initiate processing');
+        }
+
+        // Start Polling
+        pollRecordingStatus(currentRecordingId);
+
+      } catch (err) {
+        alert('Error: ' + err.message);
+        processBtn.disabled = false;
+        btnText.textContent = 'Transcribe Audio';
+        btnSpinner.style.display = 'none';
+      }
+    }
+
+    function pollRecordingStatus(recordingId) {
+      if (pollInterval) clearInterval(pollInterval);
+
+      pollInterval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/v1/recordings/${recordingId}`);
+          if (!res.ok) return;
+
+          const data = await res.json();
+          currentData = data;
+
+          if (data.status === 'completed') {
+            clearInterval(pollInterval);
+            renderResults(data);
+            resetButton();
+          } else if (data.status === 'failed') {
+            clearInterval(pollInterval);
+            alert('Pipeline failed: ' + (data.error_message || 'Unknown error'));
+            resetButton();
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }, 1000);
+    }
+
+    function resetButton() {
+      const processBtn = document.getElementById('processBtn');
+      processBtn.disabled = false;
+      document.getElementById('btnText').textContent = 'Transcribe Audio';
+      document.getElementById('btnSpinner').style.display = 'none';
+    }
+
+    function renderResults(data) {
+      document.getElementById('resultsPlaceholder').style.display = 'none';
+      const content = document.getElementById('resultsContent');
+      content.style.display = 'flex';
+
+      document.getElementById('metaStatus').textContent = data.status.toUpperCase();
+      document.getElementById('metaDuration').textContent = `${data.duration_seconds || 0}s`;
+      document.getElementById('metaLanguage').textContent = `${(data.language || 'en').toUpperCase()} (${Math.round((data.language_probability || 1) * 100)}%)`;
+      document.getElementById('metaSegments').textContent = `${data.segments.length} chunks`;
+
+      // Set audio player src
+      const player = document.getElementById('audioPlayer');
+      player.src = `/api/v1/recordings/${data.recording_id}/audio`;
+
+      // Render full transcript
+      const fullTextContainer = document.getElementById('fullTranscriptText');
+      fullTextContainer.innerHTML = '';
+      const paras = (data.full_transcript || '').split('\n\n');
+      paras.forEach(p => {
+        if (p.trim()) {
+          const pEl = document.createElement('p');
+          pEl.textContent = p;
+          fullTextContainer.appendChild(pEl);
+        }
+      });
+
+      // Render segments timeline
+      const segList = document.getElementById('segmentsList');
+      segList.innerHTML = '';
+
+      data.segments.forEach(seg => {
+        const item = document.createElement('div');
+        item.className = 'segment-item';
+        item.onclick = () => {
+          player.currentTime = seg.start;
+          player.play();
+          document.querySelectorAll('.segment-item').forEach(el => el.classList.remove('active'));
+          item.classList.add('active');
+        };
+
+        let wordsHtml = '';
+        if (seg.words && seg.words.length > 0) {
+          wordsHtml = `<div class="word-chips">` +
+            seg.words.map(w => `<span class="word-chip" title="${w.start}s - ${w.end}s">${w.word}</span>`).join('') +
+            `</div>`;
+        }
+
+        item.innerHTML = `
+          <div class="segment-top">
+            <span class="time-badge">${seg.start.toFixed(2)}s – ${seg.end.toFixed(2)}s</span>
+            ${seg.confidence ? `<span class="conf-badge">${Math.round(seg.confidence * 100)}% conf</span>` : ''}
+          </div>
+          <div class="segment-text">${seg.text}</div>
+          ${wordsHtml}
+        `;
+        segList.appendChild(item);
+      });
+    }
+
+    function copyTranscript() {
+      if (currentData && currentData.full_transcript) {
+        navigator.clipboard.writeText(currentData.full_transcript);
+        alert('Transcript copied to clipboard!');
+      }
+    }
+
+    function downloadTranscript() {
+      if (!currentData) return;
+      const blob = new Blob([currentData.full_transcript || ''], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `transcript_${currentData.recording_id}.txt`;
+      a.click();
+    }
+
+    function downloadJson() {
+      if (!currentData) return;
+      const blob = new Blob([JSON.stringify(currentData, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `result_${currentData.recording_id}.json`;
+      a.click();
+    }
+  </script>
+</body>
+</html>

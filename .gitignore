@@ -1,0 +1,37 @@
+# Environment secrets (NEVER COMMIT)
+.env
+*.env
+.env.local
+!.env.example
+
+# Node dependencies
+node_modules/
+package-lock.json
+
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Python virtual environment & cache
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+.pytest_cache/
+
+# Storage & media
+private_storage/
+uploads/
+storage/
+*.db
+*.sqlite
+*.sqlite3
+
+# Operating system & editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
