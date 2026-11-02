@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 (STORAGE_DIR / "samples").mkdir(parents=True, exist_ok=True)
 (STORAGE_DIR / "generated").mkdir(parents=True, exist_ok=True)
+(STORAGE_DIR / "references").mkdir(parents=True, exist_ok=True)
 
 
 def get_local_file_path(storage_key: str) -> str:

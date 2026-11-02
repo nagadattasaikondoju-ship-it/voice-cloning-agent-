@@ -14,6 +14,7 @@ from fastapi import (
     HTTPException,
     status
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 from app.config import settings
@@ -266,6 +267,85 @@ async def remove_recording(recording_id: str):
         "recording_id": recording_id,
         "message": "Recording and all associated files deleted successfully."
     }
+
+
+SHORT_CLIP_SECONDS = 45.0
+
+
+def _transcribe_whole_clip(wav_path: str, language: Optional[str]) -> tuple:
+    model = get_whisper_engine().model
+    if model is None:
+        raise RuntimeError("Whisper model is not available")
+    segments, info = model.transcribe(
+        wav_path,
+        language=language or settings.whisper_language,
+        beam_size=5,
+        temperature=0.0,
+        vad_filter=True,
+        condition_on_previous_text=False,
+    )
+    text = " ".join(seg.text.strip() for seg in segments).strip()
+    return text, info.language
+
+
+@router.post(
+    "/transcribe",
+    summary="Synchronously transcribe an uploaded clip (used for spoken-consent verification)"
+)
+async def transcribe_sync(
+    file: UploadFile = File(...),
+    language: Optional[str] = Form(None),
+):
+    """
+    One-shot transcription for short clips: ingest -> VAD -> Whisper -> transcript.
+    Nothing is retained; the recording and its files are deleted before returning.
+    """
+    recording_id = str(uuid.uuid4())
+    filename = file.filename or "clip.wav"
+    ext = Path(filename).suffix.lstrip(".") or "wav"
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty audio upload.")
+        if len(content) > 25 * 1024 * 1024:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Clip too large.")
+
+        raw_path = get_raw_audio_path(recording_id, ext)
+        save_audio_bytes(content, raw_path)
+        wav_16k_path = get_wav_16k_path(recording_id)
+        duration = convert_to_wav_16k_mono(raw_path, wav_16k_path)
+        create_recording(
+            recording_id=recording_id,
+            filename=filename,
+            raw_audio_path=str(raw_path),
+            wav_16k_path=str(wav_16k_path),
+            duration_seconds=duration,
+            language=language,
+        )
+        if duration <= SHORT_CLIP_SECONDS:
+            # Short clips (consent phrases): one Whisper pass over the whole clip with its
+            # built-in VAD. The chunked pipeline is tuned for long recordings and can drop
+            # trailing words of a short utterance.
+            transcript, detected = await run_in_threadpool(_transcribe_whole_clip, str(wav_16k_path), language)
+        else:
+            result = await run_in_threadpool(run_transcription_pipeline, recording_id, language)
+            transcript, detected = result.get("full_transcript", ""), result.get("language")
+        return {
+            "transcript": transcript,
+            "language": detected,
+            "duration_seconds": round(float(duration), 2),
+            "engine": get_whisper_engine().info,
+        }
+    except HTTPException:
+        raise
+    except AudioProcessingError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+    except Exception as e:
+        logger.error(f"Synchronous transcription failed: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Transcription failed.")
+    finally:
+        delete_recording(recording_id)
+        delete_recording_files(recording_id)
 
 
 @router.get("/health", summary="Health check and engine status")

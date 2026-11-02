@@ -1,264 +1,391 @@
 /**
  * Intelligence Designed To Evolve - Voice Studio Dashboard
- * Vanilla JavaScript (No Frameworks)
+ * Vanilla JavaScript client for the Rust API (backend-rust).
+ *
+ * Flow: sign in -> record/upload sample -> server-issued consent phrase -> record phrase
+ * -> Whisper verification on the server -> create clone (queued for the Python worker)
+ * -> generate speech (queued) -> poll -> play private MP3 via authenticated fetch.
  */
 
-// Configuration & State: Use active origin directly
-const API_BASE_URL = window.location.origin;
+const API_BASE_URL = ((window.APP_CONFIG && window.APP_CONFIG.apiBaseUrl) || "http://localhost:8080").replace(/\/$/, "");
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MIN_SAMPLE_SECONDS = 5;
+const MAX_SAMPLE_SECONDS = 300;
 
 const STATE = {
+  token: localStorage.getItem("auth_token"),
   user: null,
-  token: localStorage.getItem("auth_token") || "demo_token",
-  activeTab: "overview",
+  engines: [],
   currentStep: 1,
-  sampleAudioBlob: null,
-  sampleAudioDuration: 0,
-  consentAudioBlob: null,
-  consentAudioDuration: 0,
-  consentPhrase: "",
+  sampleBlob: null,
+  sampleFileName: null,
+  sampleDuration: 0,
+  consent: null, // { id, spoken_phrase, verified, ... }
+  consentBlob: null,
   clonedVoices: [],
   speechHistory: [],
-  activeSpeechAudioUrl: null,
-  pollTimers: {},
+  blobUrls: new Map(), // audio id -> object URL
+  voicePollTimer: null,
 };
 
-// Consent phrase templates
-const CONSENT_TEMPLATES = [
-  "I hereby declare and confirm that this is my own natural voice. I grant permission to Intelligence to create a private cloned voice model for speech synthesis on my personal account.",
-  "I am the legal owner of this voice recording and I explicitly authorize the Hugging Face F5-TTS neural engine to generate a private voice clone for my account under verified consent.",
-  "I confirm my identity as the speaker in this audio sample. I approve the generation of synthetic speech using this voice model solely for my authorized use.",
-];
+/* ==========================================================================
+   API client
+   ========================================================================== */
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function api(path, { method = "GET", json, form, raw = false } = {}) {
+  const headers = {};
+  if (STATE.token) headers.Authorization = `Bearer ${STATE.token}`;
+  let body;
+  if (json !== undefined) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(json);
+  } else if (form) {
+    body = form;
+  }
+
+  let res;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, { method, headers, body });
+  } catch {
+    throw new ApiError(`Cannot reach the API at ${API_BASE_URL}. Is the backend running?`, 0);
+  }
+
+  if (res.status === 401 && !path.startsWith("/api/auth/login") && !path.startsWith("/api/auth/register")) {
+    clearSession();
+    showAuthModal();
+    throw new ApiError("Your session has expired. Please sign in again.", 401);
+  }
+  if (!res.ok) {
+    let message = `Request failed (${res.status})`;
+    try {
+      const data = await res.json();
+      if (data && data.message) message = data.message;
+    } catch {}
+    throw new ApiError(message, res.status);
+  }
+  if (raw) return res;
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
 
 /* ==========================================================================
    Initialization
    ========================================================================== */
-document.addEventListener("DOMContentLoaded", () => {
-  initAuth();
+document.addEventListener("DOMContentLoaded", async () => {
+  initAuthUI();
   initTabs();
   initVoiceStudio();
   initTTSStudio();
   initSettings();
-  loadDashboardData();
+
+  loadEngines();
+  loadHealth();
+
+  if (!STATE.token) {
+    showAuthModal();
+    return;
+  }
+  try {
+    const user = await api("/api/auth/me");
+    onSignedIn(STATE.token, user);
+  } catch (err) {
+    if (err.status !== 401) showToast(err.message, "error");
+    showAuthModal();
+  }
 });
 
 /* ==========================================================================
-   Toast Notifications
+   Toasts & helpers
    ========================================================================== */
 function showToast(message, type = "info") {
   const container = document.getElementById("toast-container");
   if (!container) return;
-
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
   const icon = type === "success" ? "fa-circle-check" : type === "error" ? "fa-circle-exclamation" : "fa-circle-info";
-  toast.innerHTML = `<i class="fa-solid ${icon}"></i> <span>${message}</span>`;
-
+  toast.innerHTML = `<i class="fa-solid ${icon}"></i> <span>${escapeHtml(message)}</span>`;
   container.appendChild(toast);
   setTimeout(() => {
     toast.style.opacity = "0";
     toast.style.transform = "translateY(10px)";
     setTimeout(() => toast.remove(), 250);
-  }, 4000);
+  }, type === "error" ? 6000 : 4000);
+}
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function setButtonBusy(btn, busy, busyHtml) {
+  if (busy) {
+    btn.dataset.idleHtml = btn.dataset.idleHtml || btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = busyHtml;
+  } else {
+    btn.disabled = false;
+    if (btn.dataset.idleHtml) btn.innerHTML = btn.dataset.idleHtml;
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function engineName(id) {
+  const e = STATE.engines.find((x) => x.id === id);
+  return e ? e.name : id;
+}
+
+function extensionForMime(mime) {
+  const m = (mime || "").toLowerCase();
+  if (m.includes("webm")) return "webm";
+  if (m.includes("ogg")) return "ogg";
+  if (m.includes("mp4") || m.includes("m4a") || m.includes("aac")) return "m4a";
+  if (m.includes("mpeg") || m.includes("mp3")) return "mp3";
+  return "wav";
 }
 
 /* ==========================================================================
-   Tab Navigation Handler
+   Tabs
    ========================================================================== */
 function switchTab(tabId) {
-  STATE.activeTab = tabId;
-
-  // Header tabs
-  document.querySelectorAll(".nav-tab-btn").forEach((btn) => {
+  document.querySelectorAll(".nav-tab-btn, .mobile-tab").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === tabId);
   });
-
-  // Mobile bottom tabs
-  document.querySelectorAll(".mobile-tab").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.tab === tabId);
-  });
-
-  // Tab panes
   document.querySelectorAll(".tab-pane").forEach((pane) => {
     pane.classList.toggle("active", pane.id === `tab-${tabId}`);
   });
-
-  // Always refresh latest voices and history on tab switch
-  if (tabId === "speech-studio" || tabId === "overview") {
+  if (STATE.user && (tabId === "speech-studio" || tabId === "overview")) {
     fetchClonedVoices();
     fetchSpeechHistory();
   }
 }
+window.switchTab = switchTab;
 
 function initTabs() {
   document.querySelectorAll(".nav-tab-btn, .mobile-tab").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const target = btn.dataset.tab;
-      if (target) switchTab(target);
-    });
+    btn.addEventListener("click", () => btn.dataset.tab && switchTab(btn.dataset.tab));
   });
 }
 
 /* ==========================================================================
-   Authentication & Session Handling
+   Authentication
    ========================================================================== */
-async function initAuth() {
-  const authModal = document.getElementById("auth-modal");
+function showAuthModal() {
+  document.getElementById("auth-modal").hidden = false;
+}
+
+function clearSession() {
+  STATE.token = null;
+  STATE.user = null;
+  localStorage.removeItem("auth_token");
+}
+
+function initAuthUI() {
   const tabLogin = document.getElementById("tab-auth-login");
   const tabRegister = document.getElementById("tab-auth-register");
   const formLogin = document.getElementById("form-auth-login");
   const formRegister = document.getElementById("form-auth-register");
-  const btnLogout = document.getElementById("btn-logout-header");
 
-  tabLogin.addEventListener("click", () => {
-    tabLogin.classList.add("active");
-    tabRegister.classList.remove("active");
-    formLogin.classList.add("active");
-    formRegister.classList.remove("active");
-  });
+  const showForm = (login) => {
+    tabLogin.classList.toggle("active", login);
+    tabRegister.classList.toggle("active", !login);
+    formLogin.classList.toggle("active", login);
+    formRegister.classList.toggle("active", !login);
+  };
+  tabLogin.addEventListener("click", () => showForm(true));
+  tabRegister.addEventListener("click", () => showForm(false));
 
-  tabRegister.addEventListener("click", () => {
-    tabRegister.classList.add("active");
-    tabLogin.classList.remove("active");
-    formRegister.classList.add("active");
-    formLogin.classList.remove("active");
-  });
-
-  btnLogout.addEventListener("click", () => {
-    logoutUser();
+  document.getElementById("btn-logout-header").addEventListener("click", async () => {
+    try {
+      await api("/api/auth/logout", { method: "POST" });
+    } catch {}
+    clearSession();
+    location.reload();
   });
 
   formLogin.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const email = document.getElementById("login-email").value.trim();
-    const password = document.getElementById("login-password").value;
-
+    const btn = document.getElementById("btn-submit-login");
+    setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Signing in...');
     try {
-      const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
+      const data = await api("/api/auth/login", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        json: {
+          email: document.getElementById("login-email").value.trim(),
+          password: document.getElementById("login-password").value,
+        },
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        setAuthSession(data.token, data.user);
-        authModal.hidden = true;
-        showToast("Welcome back!", "success");
-      } else {
-        setAuthSession("jwt_token_demo", { id: "usr_active", email });
-        authModal.hidden = true;
-        showToast("Signed in successfully", "success");
-      }
-    } catch {
-      setAuthSession("jwt_token_demo", { id: "usr_active", email });
-      authModal.hidden = true;
-      showToast("Signed in to Voice Studio", "success");
+      onSignedIn(data.token, data.user);
+      showToast("Welcome back!", "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setButtonBusy(btn, false);
     }
   });
 
   formRegister.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const email = document.getElementById("register-email").value.trim();
-    setAuthSession("jwt_token_demo", { id: "usr_active", email });
-    authModal.hidden = true;
-    showToast("Account initialized successfully!", "success");
+    const password = document.getElementById("register-password").value;
+    if (password !== document.getElementById("register-confirm").value) {
+      showToast("Passwords do not match.", "error");
+      return;
+    }
+    const btn = document.getElementById("btn-submit-register");
+    setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Creating account...');
+    try {
+      const data = await api("/api/auth/register", {
+        method: "POST",
+        json: { email: document.getElementById("register-email").value.trim(), password },
+      });
+      onSignedIn(data.token, data.user);
+      showToast("Account created.", "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setButtonBusy(btn, false);
+    }
   });
-
-  // Verify active session or initialize default
-  const savedEmail = localStorage.getItem("demo_email") || "user@intelligence.ai";
-  setAuthSession(STATE.token, { id: "usr_active", email: savedEmail });
-  if (authModal) authModal.hidden = true;
 }
 
-function setAuthSession(token, user) {
+function onSignedIn(token, user) {
   STATE.token = token;
   STATE.user = user;
   localStorage.setItem("auth_token", token);
-  localStorage.setItem("demo_email", user.email);
+  document.getElementById("auth-modal").hidden = true;
 
   document.getElementById("header-user-email").textContent = user.email;
   document.getElementById("user-avatar-initial").textContent = (user.email[0] || "U").toUpperCase();
   document.getElementById("settings-user-email").textContent = user.email;
   document.getElementById("settings-user-id").textContent = user.id;
-}
 
-function logoutUser() {
-  localStorage.removeItem("auth_token");
-  STATE.token = null;
-  STATE.user = null;
-  location.reload();
+  fetchClonedVoices();
+  fetchSpeechHistory();
+  fetchConsents();
 }
 
 /* ==========================================================================
-   Data Fetching & Cloned Voices
+   Engines & health
    ========================================================================== */
-async function loadDashboardData() {
-  await Promise.allSettled([fetchClonedVoices(), fetchSpeechHistory()]);
+async function loadEngines() {
+  try {
+    STATE.engines = await api("/api/engines");
+  } catch (err) {
+    STATE.engines = [];
+    document.getElementById("engine-banner-badge").textContent = "API offline";
+    document.getElementById("engine-banner-desc").textContent = err.message;
+    return;
+  }
+  const available = STATE.engines.filter((e) => e.available);
+
+  document.getElementById("engine-banner-badge").textContent = available.length
+    ? `Engines: ${available.map((e) => e.name.split(" (")[0]).join(" · ")}`
+    : "No engines configured";
+  document.getElementById("metric-model-name").textContent = available.length ? String(available.length) : "0";
+
+  const select = document.getElementById("clone-engine-select");
+  select.innerHTML = "";
+  STATE.engines.forEach((e) => {
+    const opt = document.createElement("option");
+    opt.value = e.id;
+    opt.textContent = e.available ? e.name : `${e.name} (not configured)`;
+    opt.disabled = !e.available;
+    select.appendChild(opt);
+  });
+  if (available[0]) select.value = available[0].id;
+  updateEngineSummary();
+
+  document.getElementById("engine-status-list").innerHTML = STATE.engines
+    .map(
+      (e) => `
+      <div class="engine-status-item">
+        <div><strong>${escapeHtml(e.name)}</strong><p>${escapeHtml(e.description)}</p></div>
+        <span class="status-badge ${e.available ? "ready" : "failed"}">${e.available ? "available" : "not configured"}</span>
+      </div>`
+    )
+    .join("");
 }
 
-async function fetchClonedVoices() {
+async function loadHealth() {
+  const list = document.getElementById("system-status-list");
+  const row = (label, ok, okText = "Connected", badText = "Unavailable") =>
+    `<li><span>${label}</span><strong class="${ok ? "text-success" : "text-danger"}">
+       <i class="fa-solid ${ok ? "fa-circle-check" : "fa-circle-xmark"}"></i> ${ok ? okText : badText}</strong></li>`;
   try {
-    const res = await fetch(`${API_BASE_URL}/api/voice-clones`);
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        STATE.clonedVoices = data;
-      } else {
-        loadFallbackVoices();
-      }
-    } else {
-      loadFallbackVoices();
-    }
+    const h = await api("/api/health");
+    list.innerHTML =
+      row("Rust API (Axum)", true, "Online") +
+      row("PostgreSQL", h.database) +
+      row("Redis job queue", h.redis) +
+      row("Whisper speech pipeline", h.speech_pipeline, "Online", "Offline (consent checks will fail)");
   } catch {
-    loadFallbackVoices();
+    list.innerHTML = row("Rust API (Axum)", false, "Online", `Offline (${API_BASE_URL})`);
+  }
+}
+
+function updateEngineSummary() {
+  const id = document.getElementById("clone-engine-select").value;
+  const engine = STATE.engines.find((e) => e.id === id);
+  document.getElementById("summary-engine-name").textContent = engine ? engine.name : "—";
+  document.getElementById("step3-engine-badge").textContent = engine ? `Engine: ${engine.name.split(" (")[0]}` : "Choose an engine";
+  document.getElementById("clone-engine-hint").textContent = engine ? engine.description : "";
+}
+
+/* ==========================================================================
+   Voices
+   ========================================================================== */
+async function fetchClonedVoices() {
+  if (!STATE.user) return;
+  try {
+    STATE.clonedVoices = await api("/api/voice-clones");
+  } catch (err) {
+    showToast(err.message, "error");
   }
   renderClonedVoices();
+  scheduleVoicePolling();
 }
 
-function loadFallbackVoices() {
-  if (STATE.clonedVoices.length === 0) {
-    const cached = localStorage.getItem("cached_voices");
-    if (cached) {
-      STATE.clonedVoices = JSON.parse(cached);
-    } else {
-      STATE.clonedVoices = [
-        {
-          id: "vc_sample_01",
-          display_name: "Executive Narrative",
-          minimax_voice_id: "voice_executive_hd",
-          status: "ready",
-          created_at: new Date(Date.now() - 3600000 * 24).toISOString(),
-        },
-      ];
-    }
-  }
+function scheduleVoicePolling() {
+  clearTimeout(STATE.voicePollTimer);
+  const pending = STATE.clonedVoices.some((v) => v.status === "queued" || v.status === "processing");
+  if (pending) STATE.voicePollTimer = setTimeout(fetchClonedVoices, 3000);
 }
 
 function renderClonedVoices() {
   const container = document.getElementById("cloned-voices-list");
   const select = document.getElementById("tts-voice-select");
-  const metricVoiceCount = document.getElementById("metric-voice-count");
+  const previous = select.value;
+  document.getElementById("metric-voice-count").textContent = STATE.clonedVoices.length;
 
-  metricVoiceCount.textContent = STATE.clonedVoices.length;
-
-  // Populate TTS dropdown
   select.innerHTML = '<option value="" disabled selected>-- Choose one of your cloned voices --</option>';
-  STATE.clonedVoices.forEach((voice) => {
-    if (voice.status === "ready") {
+  STATE.clonedVoices
+    .filter((v) => v.status === "ready")
+    .forEach((v) => {
       const opt = document.createElement("option");
-      opt.value = voice.minimax_voice_id || voice.id;
-      opt.textContent = `${voice.display_name} (${voice.minimax_voice_id || voice.id})`;
+      opt.value = v.id;
+      opt.textContent = `${v.display_name} — ${engineName(v.engine)}`;
       select.appendChild(opt);
-    }
-  });
+    });
+  if (previous && [...select.options].some((o) => o.value === previous)) select.value = previous;
+  updateControlHints();
 
   if (STATE.clonedVoices.length === 0) {
     container.innerHTML = `
       <div class="empty-state">
         <i class="fa-solid fa-microphone-slash fa-2x"></i>
         <p>No cloned voices yet. Complete the steps above to clone your voice.</p>
-      </div>
-    `;
+      </div>`;
     return;
   }
 
@@ -267,490 +394,398 @@ function renderClonedVoices() {
     const card = document.createElement("div");
     card.className = "voice-card";
     const isReady = voice.status === "ready";
-
     card.innerHTML = `
       <div class="voice-card-top">
         <div>
           <h4 class="voice-name">${escapeHtml(voice.display_name)}</h4>
-          <span class="voice-id-tag">${escapeHtml(voice.minimax_voice_id || voice.id)}</span>
-          ${voice.note ? `<div style="font-size: 11px; color: #f59e0b; margin-top: 4px;"><i class="fa-solid fa-info-circle"></i> ${escapeHtml(voice.note)}</div>` : ""}
+          <span class="voice-id-tag">${escapeHtml(voice.voice_id)}</span>
+          <span class="engine-tag">${escapeHtml(engineName(voice.engine))}</span>
+          ${voice.error_message ? `<div class="voice-error"><i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(voice.error_message)}</div>` : ""}
         </div>
-        <span class="status-badge ${voice.status}">${voice.status}</span>
+        <span class="status-badge ${escapeHtml(voice.status)}">${escapeHtml(voice.status)}</span>
       </div>
       <div class="voice-card-actions">
-        <button class="pill-btn pill-btn-ghost btn-test-voice" data-id="${voice.minimax_voice_id || voice.id}" ${!isReady ? "disabled" : ""}>
-          <i class="fa-solid fa-play"></i> Test Speech
+        <button class="pill-btn pill-btn-ghost btn-test-voice" ${isReady ? "" : "disabled"}>
+          <i class="fa-solid fa-play"></i> Use Voice
         </button>
-        <button class="pill-btn pill-btn-danger btn-delete-voice" data-id="${voice.id}" title="Revoke voice">
+        <button class="pill-btn pill-btn-danger btn-delete-voice" title="Delete voice">
           <i class="fa-solid fa-trash-can"></i>
         </button>
-      </div>
-    `;
+      </div>`;
 
     card.querySelector(".btn-test-voice").addEventListener("click", () => {
       switchTab("speech-studio");
-      select.value = voice.minimax_voice_id || voice.id;
-      document.getElementById("tts-text-input").value = `Hello! This is a test synthesis of ${voice.display_name} using the Hugging Face F5-TTS neural engine.`;
-      document.getElementById("tts-char-counter").textContent = `${document.getElementById("tts-text-input").value.length} / 5000`;
+      select.value = voice.id;
+      updateControlHints();
+      const input = document.getElementById("tts-text-input");
+      if (!input.value.trim()) {
+        input.value = `Hello! This is a preview of my cloned voice, ${voice.display_name}.`;
+        document.getElementById("tts-char-counter").textContent = `${input.value.length} / 5000`;
+      }
     });
-
     card.querySelector(".btn-delete-voice").addEventListener("click", async () => {
-      if (confirm(`Are you sure you want to delete voice "${voice.display_name}"? This removes it immediately.`)) {
+      if (confirm(`Delete voice "${voice.display_name}"? It is also removed from the provider.`)) {
         await deleteClonedVoice(voice.id);
       }
     });
-
     container.appendChild(card);
   });
 }
 
-async function deleteClonedVoice(id) {
+async function deleteClonedVoice(id, quiet = false) {
   try {
-    await fetch(`${API_BASE_URL}/api/voice-clones/${id}`, {
-      method: "DELETE",
-    });
-    showToast("Voice deleted successfully", "success");
-  } catch {
-    showToast("Voice removed from dashboard", "success");
+    await api(`/api/voice-clones/${id}`, { method: "DELETE" });
+    if (!quiet) showToast("Voice deleted", "success");
+  } catch (err) {
+    showToast(err.message, "error");
   }
+  await fetchClonedVoices();
+}
 
-  STATE.clonedVoices = STATE.clonedVoices.filter((v) => v.id !== id);
-  localStorage.setItem("cached_voices", JSON.stringify(STATE.clonedVoices));
-  renderClonedVoices();
+async function fetchConsents() {
+  try {
+    const consents = await api("/api/consents");
+    const verified = consents.filter((c) => c.verified).length;
+    document.getElementById("metric-consent-status").textContent = String(verified);
+    document.getElementById("settings-consent-status").textContent = verified
+      ? `${verified} verified spoken consent${verified > 1 ? "s" : ""}`
+      : "No verified consent yet";
+  } catch {}
 }
 
 /* ==========================================================================
-   Voice Studio Stepper & Recording
+   Voice Studio (3 steps)
    ========================================================================== */
 function initVoiceStudio() {
-  // Step navigation buttons
   document.getElementById("btn-next-step-1").addEventListener("click", () => goToStudioStep(2));
   document.getElementById("btn-back-step-2").addEventListener("click", () => goToStudioStep(1));
-  document.getElementById("btn-next-step-2").addEventListener("click", () => goToStudioStep(3));
+  document.getElementById("btn-next-step-2").addEventListener("click", verifyConsent);
   document.getElementById("btn-back-step-3").addEventListener("click", () => goToStudioStep(2));
+  document.getElementById("btn-regenerate-phrase").addEventListener("click", () => issueConsentPhrase(true));
+  document.getElementById("clone-engine-select").addEventListener("change", updateEngineSummary);
+  document.getElementById("btn-next-step-1").disabled = true;
 
-  // Initialize randomized consent phrase
-  generateNewConsentPhrase();
-  document.getElementById("btn-regenerate-phrase").addEventListener("click", generateNewConsentPhrase);
+  setupMediaRecorder({
+    btnId: "btn-record-sample",
+    labelId: "record-sample-label",
+    timerId: "sample-timer",
+    meterId: "sample-level-meter",
+    previewWrapId: "sample-record-preview-wrap",
+    audioId: "sample-record-audio",
+    metaId: "sample-record-meta",
+    onComplete: (blob, duration) => {
+      setSample(blob, `sample.${extensionForMime(blob.type)}`, duration);
+      document.getElementById("sample-upload-preview-wrap").hidden = true;
+    },
+  });
 
-  // Step 1: Media Recorder for Voice Sample
-  setupMediaRecorder(
-    "btn-record-sample",
-    "record-sample-label",
-    "sample-timer",
-    "sample-level-meter",
-    "sample-record-preview-wrap",
-    "sample-record-audio",
-    "sample-record-meta",
-    (blob, duration) => {
-      STATE.sampleAudioBlob = blob;
-      STATE.sampleAudioDuration = duration;
-      validateStep1();
-      showToast("Voice sample recorded successfully", "success");
-    }
-  );
-
-  // Step 1: File Upload for Voice Sample
   const dropZone = document.getElementById("sample-drop-zone");
   const fileInput = document.getElementById("sample-file-input");
-
   dropZone.addEventListener("click", () => fileInput.click());
-
   dropZone.addEventListener("dragover", (e) => {
     e.preventDefault();
     dropZone.classList.add("dragover");
   });
-
-  dropZone.addEventListener("dragleave", () => {
-    dropZone.classList.remove("dragover");
-  });
-
+  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
   dropZone.addEventListener("drop", (e) => {
     e.preventDefault();
     dropZone.classList.remove("dragover");
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleAudioFileUpload(e.dataTransfer.files[0]);
-    }
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) handleAudioFileUpload(e.dataTransfer.files[0]);
   });
-
   fileInput.addEventListener("change", (e) => {
-    if (e.target.files && e.target.files[0]) {
-      handleAudioFileUpload(e.target.files[0]);
-    }
+    if (e.target.files && e.target.files[0]) handleAudioFileUpload(e.target.files[0]);
   });
 
-  // Step 2: Spoken Consent Recording
-  setupMediaRecorder(
-    "btn-record-consent",
-    "record-consent-label",
-    "consent-timer",
-    "consent-level-meter",
-    "consent-audio-preview-wrap",
-    "consent-audio-playback",
-    "consent-audio-meta",
-    (blob, duration) => {
-      STATE.consentAudioBlob = blob;
-      STATE.consentAudioDuration = duration;
+  setupMediaRecorder({
+    btnId: "btn-record-consent",
+    labelId: "record-consent-label",
+    timerId: "consent-timer",
+    meterId: "consent-level-meter",
+    previewWrapId: "consent-audio-preview-wrap",
+    audioId: "consent-audio-playback",
+    metaId: "consent-audio-meta",
+    onComplete: (blob) => {
+      STATE.consentBlob = blob;
+      hideConsentResult();
       validateStep2();
-      showToast("Spoken consent recorded", "success");
-    }
-  );
-
-  // Step 2: Checkbox validation
+    },
+  });
   document.getElementById("consent-checkbox").addEventListener("change", validateStep2);
-
-  // Step 3: Submission
   document.getElementById("form-clone-voice").addEventListener("submit", handleVoiceCloneSubmit);
+}
+
+function setSample(blob, fileName, duration) {
+  STATE.sampleBlob = blob;
+  STATE.sampleFileName = fileName;
+  STATE.sampleDuration = duration;
+  const ok = duration >= MIN_SAMPLE_SECONDS && duration <= MAX_SAMPLE_SECONDS && blob.size <= MAX_UPLOAD_BYTES;
+  document.getElementById("btn-next-step-1").disabled = !ok;
+  if (!ok) {
+    showToast(`Samples must be ${MIN_SAMPLE_SECONDS}s–5min and under 20 MB (got ${duration.toFixed(1)}s).`, "error");
+    return;
+  }
+  const size = blob.size > 1024 * 1024 ? `${(blob.size / 1048576).toFixed(1)} MB` : `${Math.round(blob.size / 1024)} KB`;
+  document.getElementById("summary-sample-name").textContent = `${duration.toFixed(1)}s · ${size}`;
+  showToast("Voice sample ready", "success");
+}
+
+function handleAudioFileUpload(file) {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    showToast("Audio exceeds the 20 MB size limit.", "error");
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  document.getElementById("sample-upload-filename").textContent = file.name;
+  document.getElementById("sample-upload-filesize").textContent = `${(file.size / 1048576).toFixed(2)} MB`;
+  document.getElementById("sample-upload-audio").src = url;
+  document.getElementById("sample-upload-preview-wrap").hidden = false;
+  document.getElementById("sample-record-preview-wrap").hidden = true;
+
+  const probe = new Audio();
+  probe.preload = "metadata";
+  probe.addEventListener("loadedmetadata", () => {
+    const d = isFinite(probe.duration) ? probe.duration : 0;
+    document.getElementById("sample-upload-filesize").textContent = `${(file.size / 1048576).toFixed(2)} MB • ${Math.round(d)}s`;
+    setSample(file, file.name, d);
+  });
+  probe.addEventListener("error", () => showToast("This file could not be decoded as audio.", "error"));
+  probe.src = url;
 }
 
 function goToStudioStep(step) {
   STATE.currentStep = step;
-
   if (step === 2) {
-    // If user has uploaded a sample, enable consent automatically upon checkbox check
+    if (!STATE.consent || STATE.consent.attempts_exhausted) issueConsentPhrase(false);
     validateStep2();
-  } else if (step === 3) {
-    // Auto-populate default name and ID if empty
-    const nameInput = document.getElementById("clone-display-name");
-    const idInput = document.getElementById("clone-voice-id");
-    if (!nameInput.value) {
-      nameInput.value = "My Cloned Voice";
-    }
-    if (!idInput.value) {
-      idInput.value = "voice_" + Math.random().toString(36).substring(2, 8);
-    }
   }
-
+  if (step === 3) {
+    const nameInput = document.getElementById("clone-display-name");
+    if (!nameInput.value) nameInput.value = "My Voice";
+    updateEngineSummary();
+  }
   for (let i = 1; i <= 3; i++) {
     const node = document.getElementById(`step-node-${i}`);
     const line = document.getElementById(`step-line-${i}`);
-    const content = document.getElementById(`studio-step-${i}`);
-
-    if (i < step) {
-      node.className = "step-node completed";
-      if (line) line.className = "step-line active";
-    } else if (i === step) {
-      node.className = "step-node active";
-      if (line) line.className = "step-line";
-    } else {
-      node.className = "step-node";
-      if (line) line.className = "step-line";
-    }
-
-    if (content) content.classList.toggle("active", i === step);
+    node.className = i < step ? "step-node completed" : i === step ? "step-node active" : "step-node";
+    if (line) line.className = i < step ? "step-line active" : "step-line";
+    document.getElementById(`studio-step-${i}`).classList.toggle("active", i === step);
   }
 }
 
-function generateNewConsentPhrase() {
-  const index = Math.floor(Math.random() * CONSENT_TEMPLATES.length);
-  const randomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-  STATE.consentPhrase = `${CONSENT_TEMPLATES[index]} [Security Code: ${randomCode}]`;
-  document.getElementById("consent-phrase-display").textContent = `"${STATE.consentPhrase}"`;
-}
-
-function handleAudioFileUpload(file) {
-  const maxBytes = 20 * 1024 * 1024;
-  if (file.size > maxBytes) {
-    showToast("Audio exceeds the 20 MB size limit.", "error");
-    return;
-  }
-
-  // Accept file immediately
-  STATE.sampleAudioBlob = file;
-  STATE.sampleAudioDuration = 15; // default fallback duration
-
-  const audioUrl = URL.createObjectURL(file);
-  const previewWrap = document.getElementById("sample-upload-preview-wrap");
-  const filenameEl = document.getElementById("sample-upload-filename");
-  const filesizeEl = document.getElementById("sample-upload-filesize");
-  const previewAudio = document.getElementById("sample-upload-audio");
-
-  filenameEl.textContent = file.name;
-  filesizeEl.textContent = `${(file.size / (1024 * 1024)).toFixed(2)} MB`;
-  previewAudio.src = audioUrl;
-  previewWrap.hidden = false;
-
-  // Hide record preview if any
-  document.getElementById("sample-record-preview-wrap").hidden = true;
-
-  // Try to read metadata with fallback timeout
-  const tempAudio = new Audio();
-  tempAudio.src = audioUrl;
-  let resolved = false;
-
-  const onDuration = (dur) => {
-    if (resolved) return;
-    resolved = true;
-    STATE.sampleAudioDuration = dur;
-    filesizeEl.textContent = `${(file.size / (1024 * 1024)).toFixed(2)} MB • ${Math.round(dur)}s`;
-    if (dur < 5) {
-      showToast("Uploaded! (Note: 5s–30s clear audio recommended for F5-TTS).", "info");
-    } else {
-      showToast("Voice sample loaded successfully", "success");
-    }
-    validateStep1();
-  };
-
-  tempAudio.addEventListener("loadedmetadata", () => {
-    if (tempAudio.duration && isFinite(tempAudio.duration) && tempAudio.duration > 0) {
-      onDuration(tempAudio.duration);
-    }
-  });
-
-  setTimeout(() => {
-    if (!resolved) onDuration(20);
-  }, 400);
-
-  validateStep1();
-}
-
-function validateStep1() {
-  const btnNext = document.getElementById("btn-next-step-1");
-  const isValid = STATE.sampleAudioBlob !== null;
-  btnNext.disabled = !isValid;
-  if (isValid) {
-    const sizeStr = STATE.sampleAudioBlob.size > 1024 * 1024
-      ? `${(STATE.sampleAudioBlob.size / (1024 * 1024)).toFixed(1)} MB`
-      : `${(STATE.sampleAudioBlob.size / 1024).toFixed(0)} KB`;
-    document.getElementById("summary-sample-name").textContent = `Ready (${sizeStr} audio)`;
+async function issueConsentPhrase(userRequested) {
+  if (!STATE.user) return;
+  const display = document.getElementById("consent-phrase-display");
+  display.textContent = "Requesting a verification phrase…";
+  try {
+    STATE.consent = await api("/api/consents", { method: "POST", json: { consent_version: "v1.0" } });
+    STATE.consentBlob = null;
+    display.textContent = `"${STATE.consent.spoken_phrase}"`;
+    document.getElementById("consent-audio-preview-wrap").hidden = true;
+    document.getElementById("summary-consent-status").textContent = "Not verified";
+    hideConsentResult();
+    validateStep2();
+    if (userRequested) showToast("New phrase issued. Record it again.", "info");
+  } catch (err) {
+    display.textContent = "Could not get a verification phrase.";
+    showToast(err.message, "error");
   }
 }
 
 function validateStep2() {
-  const checkbox = document.getElementById("consent-checkbox").checked;
-  const btnNext = document.getElementById("btn-next-step-2");
+  const ready = !!(STATE.consent && STATE.consentBlob && document.getElementById("consent-checkbox").checked);
+  document.getElementById("btn-next-step-2").disabled = !ready;
+}
 
-  // If checkbox is checked, authorize and enable next
-  btnNext.disabled = !checkbox;
-  if (checkbox && !STATE.consentAudioBlob) {
-    STATE.consentAudioBlob = STATE.sampleAudioBlob;
+function hideConsentResult() {
+  document.getElementById("consent-verify-result").hidden = true;
+}
+
+function showConsentResult(ok, html) {
+  const el = document.getElementById("consent-verify-result");
+  el.className = `consent-verify-result ${ok ? "success" : "error"}`;
+  el.innerHTML = html;
+  el.hidden = false;
+}
+
+async function verifyConsent() {
+  if (!STATE.consent || !STATE.consentBlob) return;
+  if (STATE.consent.verified) return goToStudioStep(3);
+
+  const btn = document.getElementById("btn-next-step-2");
+  setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Transcribing with Whisper…');
+  try {
+    const form = new FormData();
+    form.append("audio", STATE.consentBlob, `consent.${extensionForMime(STATE.consentBlob.type)}`);
+    const result = await api(`/api/consents/${STATE.consent.id}/verify`, { method: "POST", form });
+    STATE.consent = result.consent;
+    const pct = Math.round(result.match_score * 100);
+    const transcript = `<span class="transcript">Heard: "${escapeHtml(result.transcript || "(no speech detected)")}"</span>`;
+    if (result.verified) {
+      showConsentResult(true, `<strong><i class="fa-solid fa-shield-halved"></i> Consent verified</strong> — ${pct}% match.${transcript}`);
+      document.getElementById("summary-consent-status").textContent = `Verified (${pct}% match)`;
+      fetchConsents();
+      showToast("Spoken consent verified", "success");
+      setTimeout(() => goToStudioStep(3), 700);
+    } else {
+      const need = Math.round(result.threshold * 100);
+      showConsentResult(
+        false,
+        `<strong>Not verified</strong> — ${pct}% match, ${need}% required. ${result.attempts_remaining} attempt(s) left for this phrase.${transcript}`
+      );
+      STATE.consentBlob = null;
+      STATE.consent.attempts_exhausted = result.attempts_remaining <= 0;
+      if (STATE.consent.attempts_exhausted) await issueConsentPhrase(false);
+    }
+  } catch (err) {
+    showConsentResult(false, escapeHtml(err.message));
+    if (err.status === 429) await issueConsentPhrase(false);
+  } finally {
+    setButtonBusy(btn, false);
+    validateStep2();
   }
 }
 
-/**
- * Microphone MediaRecorder with audio visualizer
- */
-function setupMediaRecorder(btnId, labelId, timerId, meterId, previewWrapId, audioPlayerId, metaId, onComplete) {
+async function handleVoiceCloneSubmit(e) {
+  e.preventDefault();
+  if (!STATE.consent || !STATE.consent.verified) {
+    showToast("Verify your spoken consent first.", "error");
+    return goToStudioStep(2);
+  }
+  if (!STATE.sampleBlob) {
+    showToast("Add a voice sample first.", "error");
+    return goToStudioStep(1);
+  }
+  const btn = document.getElementById("btn-submit-clone");
+  setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Uploading sample…');
+  try {
+    const form = new FormData();
+    form.append("audio", STATE.sampleBlob, STATE.sampleFileName || "sample.wav");
+    form.append("duration", STATE.sampleDuration.toFixed(2));
+    const sample = await api("/api/voice-samples", { method: "POST", form });
+
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Queuing clone job…';
+    const clone = await api("/api/voice-clones", {
+      method: "POST",
+      json: {
+        consent_id: STATE.consent.id,
+        sample_id: sample.id,
+        display_name: document.getElementById("clone-display-name").value.trim(),
+        engine: document.getElementById("clone-engine-select").value,
+      },
+    });
+    showToast(`"${clone.display_name}" queued. Status updates appear below.`, "success");
+    resetStudio();
+    await fetchClonedVoices();
+    document.getElementById("cloned-voices-list").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    setButtonBusy(btn, false);
+  }
+}
+
+function resetStudio() {
+  STATE.sampleBlob = null;
+  STATE.sampleDuration = 0;
+  STATE.consentBlob = null;
+  STATE.consent = null;
+  document.getElementById("consent-checkbox").checked = false;
+  document.getElementById("clone-display-name").value = "";
+  ["sample-record-preview-wrap", "sample-upload-preview-wrap", "consent-audio-preview-wrap"].forEach(
+    (id) => (document.getElementById(id).hidden = true)
+  );
+  document.getElementById("btn-next-step-1").disabled = true;
+  hideConsentResult();
+  goToStudioStep(1);
+}
+
+/** Microphone recorder with a level meter. Reports the recorder's real MIME type. */
+function setupMediaRecorder({ btnId, labelId, timerId, meterId, previewWrapId, audioId, metaId, onComplete }) {
   const btn = document.getElementById(btnId);
   const label = document.getElementById(labelId);
   const timer = document.getElementById(timerId);
   const meter = document.getElementById(meterId);
-  const previewWrap = document.getElementById(previewWrapId);
-  const audioPlayer = document.getElementById(audioPlayerId);
-  const meta = document.getElementById(metaId);
-
-  let mediaRecorder = null;
-  let audioChunks = [];
-  let startTime = null;
+  let recorder = null;
+  let chunks = [];
+  let startTime = 0;
   let timerInterval = null;
-  let audioCtx = null;
-  let analyser = null;
   let animFrame = null;
-  let recognition = null;
+  let audioCtx = null;
 
   btn.addEventListener("click", async () => {
-    if (mediaRecorder && mediaRecorder.state === "recording") {
-      mediaRecorder.stop();
-      if (recognition) {
-        try { recognition.stop(); } catch {}
-      }
+    if (recorder && recorder.state === "recording") {
+      recorder.stop();
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      showToast("Microphone access was denied or is unavailable.", "error");
+      return;
+    }
+    chunks = [];
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    audioCtx.createMediaStreamSource(stream).connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const draw = () => {
+      analyser.getByteFrequencyData(data);
+      const avg = data.reduce((a, b) => a + b, 0) / data.length;
+      if (meter) meter.style.width = `${Math.min((avg / 128) * 100, 100)}%`;
+      animFrame = requestAnimationFrame(draw);
+    };
+    draw();
+
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      cancelAnimationFrame(animFrame);
+      clearInterval(timerInterval);
+      if (audioCtx) audioCtx.close();
+      if (meter) meter.style.width = "0%";
       btn.classList.remove("recording");
       label.textContent = "Record Again";
-      clearInterval(timerInterval);
-      if (animFrame) cancelAnimationFrame(animFrame);
-      if (meter) meter.style.width = "0%";
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioChunks = [];
 
-        // Live Speech-to-Text Transcription via Browser Speech Recognition
-        if (btnId === "btn-record-sample" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
-          const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-          recognition = new SpeechRec();
-          recognition.continuous = true;
-          recognition.interimResults = true;
-          recognition.lang = "en-US";
-          recognition.onresult = (e) => {
-            const transcript = Array.from(e.results).map((r) => r[0].transcript).join("");
-            const transcriptInput = document.getElementById("sample-transcript-input");
-            const badge = document.getElementById("speech-recognition-badge");
-            if (transcriptInput && transcript) {
-              transcriptInput.value = transcript;
-              if (badge) badge.style.display = "inline-flex";
-            }
-          };
-          try { recognition.start(); } catch {}
-        }
-
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        const source = audioCtx.createMediaStreamSource(stream);
-        source.connect(analyser);
-
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-        function updateVisualizer() {
-          analyser.getByteFrequencyData(dataArray);
-          let sum = 0;
-          for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-          const avg = sum / dataArray.length;
-          const pct = Math.min((avg / 128) * 100, 100);
-          if (meter) meter.style.width = `${pct}%`;
-          animFrame = requestAnimationFrame(updateVisualizer);
-        }
-        updateVisualizer();
-
-        mediaRecorder = new MediaRecorder(stream);
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunks.push(e.data);
-        };
-
-        mediaRecorder.onstop = () => {
-          stream.getTracks().forEach((track) => track.stop());
-          const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
-          const audioUrl = URL.createObjectURL(audioBlob);
-          audioPlayer.src = audioUrl;
-          previewWrap.hidden = false;
-
-          const duration = (Date.now() - startTime) / 1000;
-          if (meta) meta.textContent = `Recorded: ${duration.toFixed(1)}s`;
-
-          onComplete(audioBlob, duration);
-        };
-
-        mediaRecorder.start(200);
-        startTime = Date.now();
-        btn.classList.add("recording");
-        label.textContent = "Stop Recording";
-
-        timerInterval = setInterval(() => {
-          const elapsed = Math.floor((Date.now() - startTime) / 1000);
-          const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
-          const secs = String(elapsed % 60).padStart(2, "0");
-          timer.textContent = `${mins}:${secs}`;
-        }, 500);
-      } catch (err) {
-        showToast("Microphone access unavailable. You can proceed with the uploaded audio.", "info");
-      }
-    }
+      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      const duration = (Date.now() - startTime) / 1000;
+      document.getElementById(audioId).src = URL.createObjectURL(blob);
+      document.getElementById(previewWrapId).hidden = false;
+      document.getElementById(metaId).textContent = `Recorded: ${duration.toFixed(1)}s`;
+      onComplete(blob, duration);
+    };
+    recorder.start(200);
+    startTime = Date.now();
+    btn.classList.add("recording");
+    label.textContent = "Stop Recording";
+    timerInterval = setInterval(() => {
+      const s = Math.floor((Date.now() - startTime) / 1000);
+      timer.textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    }, 500);
   });
-}
-
-/**
- * Voice Clone Submission Handler
- */
-async function handleVoiceCloneSubmit(e) {
-  e.preventDefault();
-  const displayName = document.getElementById("clone-display-name").value.trim() || "My Cloned Voice";
-  const rawVoiceId = document.getElementById("clone-voice-id").value.trim() || ("voice_" + Date.now().toString(36));
-  const voiceId = rawVoiceId.startsWith("voice_") ? rawVoiceId : `voice_${rawVoiceId}`;
-  const btnSubmit = document.getElementById("btn-submit-clone");
-
-  btnSubmit.disabled = true;
-  btnSubmit.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Registering with Hugging Face F5-TTS...';
-
-  try {
-    const formData = new FormData();
-    formData.append("display_name", displayName);
-    formData.append("requested_voice_id", voiceId);
-
-    if (STATE.sampleAudioBlob) {
-      formData.append("sample_audio", STATE.sampleAudioBlob, STATE.sampleAudioBlob.name || "sample.wav");
-    }
-    if (STATE.consentAudioBlob) {
-      formData.append("consent_audio", STATE.consentAudioBlob, "consent.wav");
-    }
-    const refTranscript = document.getElementById("sample-transcript-input")?.value?.trim() || STATE.consentPhrase || "Authorized voice clone sample.";
-    formData.append("reference_text", refTranscript);
-    formData.append("consent_phrase", refTranscript);
-    formData.append("consent_version", "v1.0");
-
-    const res = await fetch(`${API_BASE_URL}/api/voice-clones`, {
-      method: "POST",
-      body: formData,
-    });
-
-    const data = await res.json();
-
-    const newVoice = data.voice || {
-      id: "vc_" + Date.now(),
-      display_name: displayName,
-      minimax_voice_id: voiceId,
-      status: "ready",
-      created_at: new Date().toISOString(),
-      sample_url: data.sample_url,
-      note: "Hugging Face F5-TTS Cloned Voice",
-    };
-
-    if (data.sample_url) {
-      newVoice.sample_url = data.sample_url;
-    }
-
-    STATE.clonedVoices.unshift(newVoice);
-    localStorage.setItem("cached_voices", JSON.stringify(STATE.clonedVoices));
-    renderClonedVoices();
-
-    showToast(`Voice "${displayName}" cloned successfully with Hugging Face F5-TTS!`, "success");
-
-    // Automatically navigate to TTS tab with the new voice selected!
-    setTimeout(() => {
-      switchTab("speech-studio");
-      const select = document.getElementById("tts-voice-select");
-      select.value = newVoice.minimax_voice_id || newVoice.id;
-      document.getElementById("tts-text-input").value = `Hello! This is an approved speech synthesis preview using my cloned voice ${displayName}.`;
-      document.getElementById("tts-char-counter").textContent = `${document.getElementById("tts-text-input").value.length} / 5000`;
-    }, 800);
-  } catch (err) {
-    console.error("Cloning error:", err);
-    const fallbackVoice = {
-      id: "vc_" + Date.now(),
-      display_name: displayName,
-      minimax_voice_id: voiceId,
-      status: "ready",
-      created_at: new Date().toISOString(),
-    };
-    STATE.clonedVoices.unshift(fallbackVoice);
-    localStorage.setItem("cached_voices", JSON.stringify(STATE.clonedVoices));
-    renderClonedVoices();
-    showToast(`Voice "${displayName}" added to studio!`, "success");
-    switchTab("speech-studio");
-  }
-
-  btnSubmit.disabled = false;
-  btnSubmit.innerHTML = '<i class="fa-solid fa-bolt"></i> Start Voice Cloning';
-  goToStudioStep(1);
 }
 
 /* ==========================================================================
-   Text to Speech Studio Handler
+   Text to Speech
    ========================================================================== */
 function initTTSStudio() {
   const textInput = document.getElementById("tts-text-input");
-  const charCounter = document.getElementById("tts-char-counter");
-  const sliderSpeed = document.getElementById("slider-speed");
-  const sliderVolume = document.getElementById("slider-volume");
-  const sliderPitch = document.getElementById("slider-pitch");
-  const formTTS = document.getElementById("form-generate-speech");
-
   textInput.addEventListener("input", () => {
-    charCounter.textContent = `${textInput.value.length} / 5000`;
+    document.getElementById("tts-char-counter").textContent = `${textInput.value.length} / 5000`;
   });
-
-  sliderSpeed.addEventListener("input", (e) => {
+  document.getElementById("slider-speed").addEventListener("input", (e) => {
     document.getElementById("val-speed").textContent = `${parseFloat(e.target.value).toFixed(1)}x`;
   });
-
-  sliderVolume.addEventListener("input", (e) => {
+  document.getElementById("slider-volume").addEventListener("input", (e) => {
     document.getElementById("val-volume").textContent = parseFloat(e.target.value).toFixed(1);
   });
-
-  sliderPitch.addEventListener("input", (e) => {
+  document.getElementById("slider-pitch").addEventListener("input", (e) => {
     document.getElementById("val-pitch").textContent = e.target.value;
   });
-
-  formTTS.addEventListener("submit", handleTTSGenerate);
+  document.getElementById("tts-voice-select").addEventListener("change", updateControlHints);
+  document.getElementById("form-generate-speech").addEventListener("submit", handleTTSGenerate);
 
   const audio = document.getElementById("tts-audio-element");
   const disc = document.getElementById("audio-disc-visual");
@@ -762,293 +797,187 @@ function initTTSStudio() {
   document.getElementById("btn-refresh-voices").addEventListener("click", fetchClonedVoices);
 }
 
-async function handleTTSGenerate(e) {
-  e.preventDefault();
-  const voiceSelect = document.getElementById("tts-voice-select");
-  const textInput = document.getElementById("tts-text-input");
-  const speed = parseFloat(document.getElementById("slider-speed").value);
-  const volume = parseFloat(document.getElementById("slider-volume").value);
-  const pitch = parseInt(document.getElementById("slider-pitch").value, 10);
-  const btn = document.getElementById("btn-generate-speech");
-  const badge = document.getElementById("player-status-badge");
-
-  if (!voiceSelect.value) {
-    showToast("Please choose a cloned voice first.", "error");
-    return;
-  }
-
-  const voiceId = voiceSelect.value;
-  const text = textInput.value.trim();
-
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Synthesizing Audio...';
-  badge.textContent = "Processing";
-
-  try {
-    const res = await fetch(`${API_BASE_URL}/api/speech/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        voice_id: voiceId,
-        text,
-        speed,
-        volume,
-        pitch,
-      }),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data.audio_url) {
-        onSpeechGenerated(data.audio_url, text, voiceId);
-      } else if (data.status === "insufficient_balance" || data.use_browser_speech) {
-        speakWithBrowserSpeech(text, speed, pitch, voiceId, data.sample_url);
-      } else {
-        speakWithBrowserSpeech(text, speed, pitch, voiceId, null);
-      }
-    } else {
-      speakWithBrowserSpeech(text, speed, pitch, voiceId, null);
-    }
-  } catch (err) {
-    console.error("Speech generation error:", err);
-    speakWithBrowserSpeech(text, speed, pitch, voiceId, null);
-  }
-
-  btn.disabled = false;
-  btn.innerHTML = '<i class="fa-solid fa-waveform"></i> Generate Speech (MP3)';
+/** Not every engine honours every slider; say so instead of silently ignoring it. */
+function updateControlHints() {
+  const voice = STATE.clonedVoices.find((v) => v.id === document.getElementById("tts-voice-select").value);
+  const unsupported = { f5: ["speed", "volume", "pitch"], elevenlabs: ["volume", "pitch"], minimax: [] };
+  const off = voice ? unsupported[voice.engine] || [] : [];
+  ["speed", "volume", "pitch"].forEach((k) => {
+    const slider = document.getElementById(`slider-${k}`);
+    slider.disabled = off.includes(k);
+    slider.title = off.includes(k) ? `Not supported by ${engineName(voice.engine)}` : "";
+  });
 }
 
-function onSpeechGenerated(audioUrl, text, voiceId) {
-  const audio = document.getElementById("tts-audio-element");
-  const title = document.getElementById("player-title");
-  const subtitle = document.getElementById("player-subtitle");
-  const dlBtn = document.getElementById("btn-download-mp3");
-  const sampleBtn = document.getElementById("btn-play-original-sample");
+async function handleTTSGenerate(e) {
+  e.preventDefault();
+  const voiceId = document.getElementById("tts-voice-select").value;
+  const text = document.getElementById("tts-text-input").value.trim();
+  if (!voiceId) return showToast("Choose a ready voice first.", "error");
+  if (!text) return showToast("Enter some text to speak.", "error");
+
+  const btn = document.getElementById("btn-generate-speech");
   const badge = document.getElementById("player-status-badge");
+  setButtonBusy(btn, true, '<i class="fa-solid fa-spinner fa-spin"></i> Queued…');
+  badge.textContent = "Queued";
+  try {
+    const job = await api("/api/speech/generate", {
+      method: "POST",
+      json: {
+        voice_clone_id: voiceId,
+        text,
+        speed: parseFloat(document.getElementById("slider-speed").value),
+        volume: parseFloat(document.getElementById("slider-volume").value),
+        pitch: parseInt(document.getElementById("slider-pitch").value, 10),
+      },
+    });
 
-  audio.src = audioUrl;
-  audio.load();
-  audio.play().catch(() => {});
+    const started = Date.now();
+    let status = job;
+    while (status.status === "queued" || status.status === "processing") {
+      if (Date.now() - started > 10 * 60 * 1000) throw new Error("Timed out waiting for the speech job.");
+      await sleep(2000);
+      status = await api(`/api/speech/jobs/${job.job_id}`);
+      badge.textContent = status.status === "processing" ? "Synthesizing" : "Queued";
+      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${badge.textContent}…`;
+    }
+    if (status.status !== "ready" || !status.audio_url) {
+      throw new Error(status.error_message || "Speech generation failed.");
+    }
+    const voice = STATE.clonedVoices.find((v) => v.id === voiceId);
+    await playAudio(status.audio_url.split("/").pop(), voice ? voice.display_name : "Voice", text);
+    badge.textContent = "Ready";
+    showToast("Speech generated", "success");
+    fetchSpeechHistory();
+  } catch (err) {
+    badge.textContent = "Failed";
+    showToast(err.message, "error");
+  } finally {
+    setButtonBusy(btn, false);
+  }
+}
 
-  title.textContent = `Voice: ${voiceId}`;
-  subtitle.textContent = `"${text.length > 50 ? text.substring(0, 50) + "..." : text}"`;
-  badge.textContent = "Ready (Hugging Face F5-TTS)";
-  badge.style.borderColor = "var(--success)";
-  badge.style.color = "var(--success)";
+/** Audio is private: fetch with the JWT, then play from a blob URL. */
+async function getAudioUrl(audioId) {
+  if (STATE.blobUrls.has(audioId)) return STATE.blobUrls.get(audioId);
+  const res = await api(`/api/audio/${audioId}`, { raw: true });
+  const url = URL.createObjectURL(await res.blob());
+  STATE.blobUrls.set(audioId, url);
+  return url;
+}
 
-  dlBtn.href = audioUrl;
-  dlBtn.style.display = "inline-flex";
+async function playAudio(audioId, voiceName, text) {
+  try {
+    const url = await getAudioUrl(audioId);
+    const audio = document.getElementById("tts-audio-element");
+    audio.src = url;
+    audio.play().catch(() => {});
+    document.getElementById("player-title").textContent = `Voice: ${voiceName}`;
+    document.getElementById("player-subtitle").textContent = `"${text.length > 60 ? text.slice(0, 60) + "…" : text}" · AI-generated`;
+    const dl = document.getElementById("btn-download-mp3");
+    dl.href = url;
+    dl.download = `ai_generated_${audioId}.mp3`;
+    dl.style.display = "inline-flex";
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
 
-  if (sampleBtn) sampleBtn.style.display = "none";
-
-  const historyItem = {
-    id: `tts_${Date.now()}`,
-    voice_id: voiceId,
-    text,
-    audio_url: audioUrl,
-    created_at: new Date().toISOString(),
-  };
-  STATE.speechHistory.unshift(historyItem);
-  localStorage.setItem("cached_history", JSON.stringify(STATE.speechHistory));
-  renderSpeechHistory();
-
-  showToast("Audio synthesized successfully with Hugging Face F5-TTS!", "success");
+async function downloadAudio(audioId) {
+  try {
+    const a = document.createElement("a");
+    a.href = await getAudioUrl(audioId);
+    a.download = `ai_generated_${audioId}.mp3`;
+    a.click();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
 }
 
 async function fetchSpeechHistory() {
+  if (!STATE.user) return;
   try {
-    const res = await fetch(`${API_BASE_URL}/api/speech/history`);
-    if (res.ok) {
-      STATE.speechHistory = await res.json();
-    } else {
-      loadFallbackHistory();
-    }
-  } catch {
-    loadFallbackHistory();
+    STATE.speechHistory = await api("/api/speech/history");
+  } catch (err) {
+    showToast(err.message, "error");
   }
   renderSpeechHistory();
-}
-
-function loadFallbackHistory() {
-  const cached = localStorage.getItem("cached_history");
-  if (cached) {
-    STATE.speechHistory = JSON.parse(cached);
-  }
 }
 
 function renderSpeechHistory() {
   const container = document.getElementById("speech-history-list");
-  const overviewList = document.getElementById("overview-recent-list");
-  const metricAudioCount = document.getElementById("metric-audio-count");
-
-  metricAudioCount.textContent = STATE.speechHistory.length;
+  const overview = document.getElementById("overview-recent-list");
+  document.getElementById("metric-audio-count").textContent = STATE.speechHistory.length;
 
   if (STATE.speechHistory.length === 0) {
-    const emptyHtml = `
-      <div class="empty-state">
-        <i class="fa-solid fa-file-audio fa-2x"></i>
-        <p>No audio synthesized yet.</p>
-      </div>
-    `;
-    container.innerHTML = emptyHtml;
-    overviewList.innerHTML = emptyHtml;
+    const empty = `<div class="empty-state"><i class="fa-solid fa-file-audio fa-2x"></i><p>No audio generated yet.</p></div>`;
+    container.innerHTML = empty;
+    overview.innerHTML = empty;
     return;
   }
-
   container.innerHTML = "";
-  overviewList.innerHTML = "";
+  overview.innerHTML = "";
 
-  STATE.speechHistory.forEach((item) => {
+  const build = (item, withDelete) => {
     const el = document.createElement("div");
     el.className = "history-item";
-    const dateFormatted = new Date(item.created_at).toLocaleString();
-
     el.innerHTML = `
       <div class="history-details">
         <div class="history-text">"${escapeHtml(item.text)}"</div>
         <div class="history-meta">
-          <span><i class="fa-solid fa-microphone"></i> ${escapeHtml(item.voice_id)}</span>
-          <span><i class="fa-regular fa-clock"></i> ${dateFormatted}</span>
+          <span><i class="fa-solid fa-microphone"></i> ${escapeHtml(item.voice_name)} · ${escapeHtml(engineName(item.engine))}</span>
+          <span><i class="fa-regular fa-clock"></i> ${new Date(item.created_at).toLocaleString()}</span>
+          ${item.duration_seconds ? `<span>${Number(item.duration_seconds).toFixed(1)}s</span>` : ""}
         </div>
       </div>
       <div class="history-actions">
-        <button class="btn-refresh btn-play-history" title="Play Audio">
-          <i class="fa-solid fa-play"></i>
-        </button>
-        <a href="${item.audio_url}" download="speech_${item.id}.mp3" class="btn-refresh" title="Download MP3">
-          <i class="fa-solid fa-download"></i>
-        </a>
-        <button class="btn-refresh btn-delete-history" title="Delete Audio">
-          <i class="fa-solid fa-trash"></i>
-        </button>
-      </div>
-    `;
-
-    el.querySelector(".btn-play-history").addEventListener("click", () => {
-      const audio = document.getElementById("tts-audio-element");
-      audio.src = item.audio_url;
-      audio.play();
-      document.getElementById("player-title").textContent = `Voice: ${item.voice_id}`;
-      document.getElementById("player-subtitle").textContent = item.text;
+        <button class="btn-refresh btn-play" title="Play"><i class="fa-solid fa-play"></i></button>
+        <button class="btn-refresh btn-download" title="Download MP3"><i class="fa-solid fa-download"></i></button>
+        ${withDelete ? '<button class="btn-refresh btn-delete" title="Delete"><i class="fa-solid fa-trash"></i></button>' : ""}
+      </div>`;
+    el.querySelector(".btn-play").addEventListener("click", () => {
+      switchTab("speech-studio");
+      playAudio(item.id, item.voice_name, item.text);
     });
+    el.querySelector(".btn-download").addEventListener("click", () => downloadAudio(item.id));
+    if (withDelete) el.querySelector(".btn-delete").addEventListener("click", () => deleteHistoryAudio(item.id));
+    return el;
+  };
 
-    el.querySelector(".btn-delete-history").addEventListener("click", () => {
-      deleteHistoryAudio(item.id);
-    });
-
-    container.appendChild(el);
-  });
-
-  STATE.speechHistory.slice(0, 3).forEach((item) => {
-    const clone = container.children[0].cloneNode(true);
-    overviewList.appendChild(clone);
-  });
+  STATE.speechHistory.forEach((item) => container.appendChild(build(item, true)));
+  STATE.speechHistory.slice(0, 3).forEach((item) => overview.appendChild(build(item, false)));
 }
 
-function deleteHistoryAudio(id) {
-  STATE.speechHistory = STATE.speechHistory.filter((i) => i.id !== id);
-  localStorage.setItem("cached_history", JSON.stringify(STATE.speechHistory));
-  renderSpeechHistory();
-  showToast("Audio record deleted", "success");
+async function deleteHistoryAudio(id, quiet = false) {
+  try {
+    await api(`/api/speech/audio/${id}`, { method: "DELETE" });
+    if (STATE.blobUrls.has(id)) {
+      URL.revokeObjectURL(STATE.blobUrls.get(id));
+      STATE.blobUrls.delete(id);
+    }
+    if (!quiet) showToast("Audio deleted", "success");
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+  if (!quiet) fetchSpeechHistory();
 }
 
 /* ==========================================================================
-   Settings & Governance
+   Settings
    ========================================================================== */
 function initSettings() {
   document.getElementById("btn-delete-all-voices").addEventListener("click", async () => {
-    if (confirm("WARNING: This will permanently delete all your cloned voices. Proceed?")) {
-      for (const voice of STATE.clonedVoices) {
-        await deleteClonedVoice(voice.id);
-      }
-      showToast("All cloned voices deleted", "success");
-    }
+    if (!STATE.clonedVoices.length) return showToast("No voices to delete.", "info");
+    if (!confirm("Permanently delete ALL your cloned voices (including from providers)?")) return;
+    for (const v of [...STATE.clonedVoices]) await deleteClonedVoice(v.id, true);
+    showToast("All cloned voices deleted", "success");
   });
 
-  document.getElementById("btn-delete-all-audio").addEventListener("click", () => {
-    if (confirm("Permanently purge all synthesized MP3 files from storage?")) {
-      STATE.speechHistory = [];
-      localStorage.removeItem("cached_history");
-      renderSpeechHistory();
-      showToast("All audio files purged", "success");
-    }
+  document.getElementById("btn-delete-all-audio").addEventListener("click", async () => {
+    if (!STATE.speechHistory.length) return showToast("No audio to delete.", "info");
+    if (!confirm("Permanently delete ALL generated audio files?")) return;
+    for (const item of [...STATE.speechHistory]) await deleteHistoryAudio(item.id, true);
+    await fetchSpeechHistory();
+    showToast("All generated audio deleted", "success");
   });
-
-  // Hugging Face Token Save
-  const btnSaveToken = document.getElementById("btn-save-hf-token");
-  if (btnSaveToken) {
-    btnSaveToken.addEventListener("click", async () => {
-      const token = document.getElementById("hf-token-input").value.trim();
-      if (!token) return showToast("Please enter your Hugging Face Token", "error");
-
-      btnSaveToken.disabled = true;
-      btnSaveToken.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving Token...';
-
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/settings/hf-token`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token }),
-        });
-        const data = await res.json();
-        showToast(data.message || "Hugging Face Token saved! ZeroGPU unlocked.", "success");
-      } catch {
-        showToast("Error saving access token", "error");
-      } finally {
-        btnSaveToken.disabled = false;
-        btnSaveToken.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save Access Token';
-      }
-    });
-  }
 }
-
-/* ==========================================================================
-   Utilities
-   ========================================================================== */
-function escapeHtml(str) {
-  if (!str) return "";
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-function speakWithBrowserSpeech(text, speed, pitch, voiceId, sampleUrl) {
-  const badge = document.getElementById("player-status-badge");
-  const title = document.getElementById("player-title");
-  const subtitle = document.getElementById("player-subtitle");
-  const dlBtn = document.getElementById("btn-download-mp3");
-  const sampleBtn = document.getElementById("btn-play-original-sample");
-  const disc = document.getElementById("audio-disc-visual");
-  const audio = document.getElementById("tts-audio-element");
-
-  title.textContent = `Voice: ${voiceId} (Browser Voice)`;
-  subtitle.textContent = `"${text.length > 50 ? text.substring(0, 50) + "..." : text}"`;
-  badge.textContent = "Browser Speech (Preview)";
-  badge.style.borderColor = "#f59e0b";
-  badge.style.color = "#fbbf24";
-
-  if (dlBtn) dlBtn.style.display = "none";
-
-  if (sampleUrl && sampleBtn) {
-    sampleBtn.style.display = "inline-flex";
-    sampleBtn.onclick = () => {
-      audio.src = sampleUrl;
-      audio.play();
-      showToast("Playing original uploaded voice recording", "info");
-    };
-  }
-
-  showToast("Speaking natural preview with Browser Speech API.", "info");
-
-  if ("speechSynthesis" in window) {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = Math.max(0.5, Math.min(2.0, speed || 1.0));
-    utterance.pitch = Math.max(0.5, Math.min(1.5, 1.0 + (pitch || 0) * 0.05));
-
-    utterance.onstart = () => disc.classList.add("playing");
-    utterance.onend = () => disc.classList.remove("playing");
-    utterance.onerror = () => disc.classList.remove("playing");
-
-    window.speechSynthesis.speak(utterance);
-  }
-}
-

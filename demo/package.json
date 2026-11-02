@@ -1,0 +1,13 @@
+{
+  "name": "voice-studio-demo",
+  "private": true,
+  "description": "Local-only demo server (in-memory, no auth). Not the production backend.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.75.0",
+    "@gradio/client": "^2.7.2",
+    "dotenv": "^18.0.9"
+  }
+}
