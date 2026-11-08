@@ -49,7 +49,9 @@ async fn main() -> anyhow::Result<()> {
     let cors = CorsLayer::new()
         .allow_origin(origins)
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]);
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+        // Lets a hosted dashboard (e.g. on Vercel) call this API on localhost (Chrome private network access).
+        .allow_private_network(true);
 
     let state = AppState { db, redis, http, config: config.clone() };
 
