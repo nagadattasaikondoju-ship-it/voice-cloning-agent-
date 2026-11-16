@@ -31,7 +31,7 @@ pub async fn engine_status(state: &AppState) -> EngineStatus {
     reported.unwrap_or_else(|| EngineStatus {
         ok: false,
         status: "offline".into(),
-        engine: "chatterbox".into(),
+        engine: "sarvam".into(),
         model: String::new(),
         model_label: String::new(),
         device: None,
@@ -45,7 +45,7 @@ pub async fn require_engine(state: &AppState) -> Result<EngineStatus, ApiError> 
     match s.status.as_str() {
         "ready" => Ok(s),
         "loading" => Err(ApiError::unavailable(
-            "The voice model is still loading (the first start downloads it). Try again in a minute.",
+            "The voice worker is still starting. Try again in a moment.",
         )),
         _ => Err(ApiError::unavailable(if s.problem.is_empty() { "Voice engine unavailable".into() } else { s.problem })),
     }

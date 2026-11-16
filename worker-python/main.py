@@ -51,8 +51,8 @@ def main() -> None:
         tts.load()
         STATE.update(status="ready", problem="")
     except Exception as e:  # noqa: BLE001
-        logger.exception("Model failed to load")
-        STATE.update(status="error", problem=f"Chatterbox failed to load: {e}")
+        logger.exception("Voice engine is not configured")
+        STATE.update(status="error", problem=str(e))
     health.publish(r, STATE["status"], STATE["problem"])
     logger.info(f"Listening on {list(HANDLERS)}")
 

@@ -1,12 +1,12 @@
 # Intelligence Designed To Evolve
 
-Consent-verified voice cloning and text-to-speech that runs entirely on your own machine: free, no API keys,
+Consent-verified voice cloning and text-to-speech, spoken by the Sarvam AI voice cloning API. No GPU needed;
 no usage limits. A user can only clone their **own** voice. The server issues a random phrase, the user reads it
 aloud, and the API refuses to create a clone until Whisper's transcript of that recording matches the phrase.
 
-- **Voice engine:** [Chatterbox Turbo](https://github.com/resemble-ai/chatterbox) by Resemble AI (MIT license, commercial use allowed). English. Zero-shot cloning from 6–30 s of speech. Every clip carries an inaudible AI watermark.
+- **Voice engine:** [Sarvam AI voice cloning](https://docs.sarvam.ai/api-reference/voice-cloning/clone) (hosted, needs a `SARVAM_API_KEY`, billed per character). Zero-shot cloning from a 6–15 s reference clip. English (Indian) plus Hindi, Bengali, Tamil, Telugu, Kannada, Malayalam, Marathi, Gujarati, Punjabi, Odia and Assamese; cross-lingual, so one voice can speak any of them.
 - **Rust (Axum) API:** auth, consent, uploads, ownership checks, audit log
-- **Python worker:** runs the Chatterbox model on GPU or CPU and processes jobs from Redis
+- **Python worker:** processes jobs from Redis and calls the Sarvam API
 - **Whisper speech pipeline** (faster-whisper): verifies spoken consent, turns audio into script text
 - **Static dashboard:** HTML/CSS/vanilla JS, two tabs: **Voices** (record or upload a sample → read the consent phrase → name it) and **Speak** (pick a voice, type or load a script, generate, play, download, history)
 
@@ -27,14 +27,14 @@ aloud, and the API refuses to create a clone until Whisper's transcript of that 
     └──► private_storage/   samples/ consents/ references/ generated/   (shared with the worker)
                    │
                    ▼
- Python worker ──► Chatterbox (GPU if available, else CPU)
-    clone:  sample → mono 24 kHz WAV, silence trimmed, ≤ 20 s → references/<voice>.wav
-    speech: text split into sentences → generated in the cloned voice → joined with short pauses
+ Python worker ──► Sarvam AI  POST https://api.sarvam.ai/voices/clone
+    clone:  sample → mono 24 kHz WAV, silence trimmed, ≤ 15 s → references/<voice>.wav
+    speech: text split into ≤ 900-char chunks → each sent with the reference clip → joined with short pauses
             → speed (pitch-preserving), loudness normalized, volume → MP3 → generated/<job>.mp3
 ```
 
-Every clip goes through the same steps (fixed seed, same reference processing, same loudness target), so the same
-text and voice always produce the same audio, and all clips have the same format and level.
+Every clip goes through the same steps (same reference processing, same loudness target), so all clips have the
+same format and level.
 
 ### Cloning flow
 
@@ -45,8 +45,8 @@ text and voice always produce the same audio, and all clips have the same format
 
 ### Model
 
-Chatterbox Turbo: English, 350M parameters, fits a 4 GB GPU, and falls back to CPU if the GPU runs out of memory.
-Controls: speed (0.5–2×, pitch preserved) and volume.
+Sarvam AI voice cloning (beta API). The reference clip is sent with every request (it is not stored at Sarvam).
+`SARVAM_LANGUAGE` forces the text language; empty means Sarvam detects it. Controls: speed (0.5–2×, pitch preserved) and volume.
 
 ---
 
@@ -56,19 +56,13 @@ Controls: speed (0.5–2×, pitch preserved) and volume.
 cp .env.example .env
 ```
 
-Set `JWT_SECRET` in `.env` (required). Generate one with:
+Set `JWT_SECRET` and `SARVAM_API_KEY` (from https://dashboard.sarvam.ai) in `.env`; both are required. Generate the secret with:
 
 ```bash
 openssl rand -hex 32
 ```
 
-With an NVIDIA GPU (Windows: Docker Desktop with WSL2 and a current NVIDIA driver):
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
-```
-
-Without a GPU (set `TORCH_VARIANT=cpu` in `.env` for a smaller image):
+Start the stack:
 
 ```bash
 docker compose up --build
@@ -80,14 +74,7 @@ docker compose up --build
 | http://localhost:5500 | Landing page |
 | http://localhost:8080/api/health | Health of DB, Redis, Whisper and the voice worker |
 
-The first start downloads the voice model (about 1–2 GB) and Whisper. The dashboard shows "Loading model…" until
-the worker is ready. Plan for about 20–25 GB of free disk for images and models.
-
-To check that Docker can see your GPU:
-
-```bash
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
-```
+The first start downloads Whisper (used for the consent check). The voice worker needs no download.
 
 ## Hosted dashboard (Vercel)
 
@@ -102,7 +89,7 @@ so it works only in a browser on the computer running the stack.
 
 ## Local development (without Docker)
 
-Needs Rust 1.89+, Python 3.11 (Chatterbox needs 3.10–3.12), PostgreSQL 15+, Redis 7+ and `ffmpeg`.
+Needs Rust 1.89+, Python 3.11, PostgreSQL 15+, Redis 7+ and `ffmpeg`.
 
 ```bash
 createdb voiceclone
@@ -124,11 +111,10 @@ cd backend-rust && cp .env.example .env    # set JWT_SECRET
 cargo run
 ```
 
-Worker. Use `cu124` instead of `cpu` for an NVIDIA GPU:
+Worker (set `SARVAM_API_KEY` in its `.env`):
 
 ```bash
 cd worker-python && python3.11 -m venv .venv && . .venv/bin/activate
-pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt && cp .env.example .env
 python main.py
 ```
@@ -149,7 +135,7 @@ cd backend-rust && cargo test
 cd speech_pipeline && pytest
 ```
 
-Check the voice engine by hand (loads the model, prints device and status):
+Check the voice engine configuration by hand (prints status and any problem):
 
 ```bash
 cd worker-python && python health.py
@@ -162,9 +148,9 @@ cd worker-python && python health.py
 | Symptom | Cause | Fix |
 |---|---|---|
 | Status pill says "Engine offline" | `worker-python` is not running | `docker compose logs worker-python` |
-| "Loading model…" for a long time | First start is downloading the model | Wait; check the worker log for download progress |
-| Worker log: GPU out of memory, falling back to CPU | Another program is using GPU memory | Close GPU-heavy apps and restart the worker |
-| Generation is slow | Running on CPU | Use the GPU compose file; check the dashboard shows "on GPU" |
+| "Engine error: SARVAM_API_KEY is not set" | No key in `.env` | Add the key and restart the worker |
+| "Sarvam rejected the API key" / "quota exceeded" | Invalid key or no credits | Check the key and credits at https://dashboard.sarvam.ai |
+| Words in the wrong language or accent | Language auto-detection guessed wrong | Set `SARVAM_LANGUAGE` (e.g. `en-IN`, `hi-IN`) |
 | "Only X s of speech was found" | Sample is mostly silence or too short | Record 10–30 s of clear speech |
 | Consent "speech recognition unavailable" | `speech-pipeline` is down or downloading Whisper | `docker compose logs speech-pipeline` |
 | "Cannot reach the API" | Page opened as `file://` or from another origin | Open http://localhost:5500 |
@@ -206,7 +192,7 @@ Audio (mp3, m4a, wav, webm, ogg) is transcribed with Whisper, so an existing rec
 - Every query is scoped by `user_id`. Other users get 404s, and audio streaming requires the owner's JWT.
 - CORS is limited to `ALLOWED_ORIGINS`; in Docker, all ports bind to `127.0.0.1`.
 - Audit log entries cover register, login, failed logins, consent issue/verify/fail, uploads, queueing and deletes.
-- Generated audio is watermarked by Chatterbox (Resemble PerTh).
+- Reference clips and text are sent to Sarvam AI to generate speech. Do not use it for audio you may not share with them.
 
 **Not done yet:** speaker verification (checking that the consent voice is the same person as the sample voice),
 rate limiting, and token revocation on logout.
@@ -215,16 +201,15 @@ rate limiting, and token revocation on logout.
 
 ```
 backend-rust/      Axum API (src/routes/*, consent_check.rs, stt.rs, migrations/)
-worker-python/     main.py (queue loop + heartbeat), tts.py (Chatterbox), jobs.py, audio_utils.py, health.py
+worker-python/     main.py (queue loop + heartbeat), tts.py (Sarvam API client), jobs.py, audio_utils.py, health.py
 speech_pipeline/   Whisper service (POST /api/v1/transcribe)
 frontend/          Dashboard (dashboard.html/.css/.js, config.js)
 index.html, styles.css   Landing page
-docker-compose.yml          Full stack (CPU)
-docker-compose.gpu.yml      Adds the NVIDIA GPU to the voice worker
+docker-compose.yml          Full stack
 ```
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Chatterbox is MIT-licensed by Resemble AI.
+MIT. See [LICENSE](LICENSE). Use of the Sarvam API is subject to Sarvam AI's terms.
 
 This software is for lawful, consent-based cloning of your own voice only. Do not use it to impersonate anyone.

@@ -37,10 +37,7 @@ def _fetch_one(sql: str, params: tuple) -> Optional[Dict[str, Any]]:
 
 
 def _reason(err: Exception) -> str:
-    msg = str(err) or err.__class__.__name__
-    if "out of memory" in msg.lower():
-        msg = "The GPU ran out of memory. Try shorter text, or set CHATTERBOX_DEVICE=cpu."
-    return msg[:500]
+    return (str(err) or err.__class__.__name__)[:500]
 
 
 def process_voice_clone_job(job: Dict[str, Any]) -> None:

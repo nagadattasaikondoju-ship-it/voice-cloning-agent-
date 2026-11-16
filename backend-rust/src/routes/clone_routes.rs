@@ -16,7 +16,7 @@ use crate::{
     storage,
 };
 
-/// Chatterbox needs more than 5 s of speech; silence is trimmed by the worker.
+/// At least 6 s of speech for a stable clone; silence is trimmed by the worker.
 const MIN_SAMPLE_SECONDS: f64 = 6.0;
 const SAMPLE_COLUMNS: &str = "id, user_id, storage_key, mime_type, duration_seconds, file_size_bytes, created_at";
 
@@ -102,7 +102,7 @@ pub async fn create_voice_clone(
 
     let clone: VoiceClone = sqlx::query_as(&format!(
         "INSERT INTO voice_clones (id, user_id, consent_id, sample_id, display_name, voice_id, engine, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'chatterbox', 'queued') RETURNING {CLONE_COLUMNS}"
+         VALUES ($1, $2, $3, $4, $5, $6, 'sarvam', 'queued') RETURNING {CLONE_COLUMNS}"
     ))
     .bind(Uuid::new_v4())
     .bind(auth.user_id)

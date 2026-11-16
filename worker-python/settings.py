@@ -11,8 +11,11 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localho
 # Private storage shared with the Rust API (same directory / Docker volume).
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "../backend-rust/private_storage")).resolve()
 
-# Chatterbox Turbo (Resemble AI, MIT license): English, 350M params, fits 4 GB GPUs. Runs locally.
-# auto = CUDA if available, else CPU. Set "cpu" to force CPU.
-CHATTERBOX_DEVICE = os.getenv("CHATTERBOX_DEVICE", "auto").strip().lower()
-# Fixed seed so the same text + voice gives the same audio every time.
-CHATTERBOX_SEED = int(os.getenv("CHATTERBOX_SEED", "42"))
+# Sarvam AI voice cloning (hosted). Get a key at https://dashboard.sarvam.ai
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
+SARVAM_API_URL = os.getenv("SARVAM_API_URL", "https://api.sarvam.ai/voices/clone").strip()
+# Empty = detect from the text. Or one of: en-IN hi-IN bn-IN ta-IN te-IN kn-IN ml-IN mr-IN gu-IN pa-IN od-IN as-IN
+SARVAM_LANGUAGE = os.getenv("SARVAM_LANGUAGE", "").strip()
+# Ask Sarvam to isolate the speaker in the reference clip (adds ~1 s per request).
+SARVAM_REMOVE_NOISE = os.getenv("SARVAM_REMOVE_NOISE", "false").strip().lower() in ("1", "true", "yes")
+SARVAM_TIMEOUT = float(os.getenv("SARVAM_TIMEOUT", "120"))
