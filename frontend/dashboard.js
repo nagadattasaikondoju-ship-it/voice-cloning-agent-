@@ -138,8 +138,8 @@ async function loadEngine() {
     e = { status: "offline", problem: err.message };
   }
   state.engineReady = e.status === "ready";
-  const device = e.device === "cuda" ? "GPU" : e.device === "cpu" ? "CPU" : "";
-  const label = { ready: `Ready${device ? " · " + device : ""}`, loading: "Loading model…", error: "Engine error", offline: "Engine offline" };
+  const device = e.device === "cloud" ? "Sarvam" : e.device === "cuda" ? "GPU" : e.device === "cpu" ? "CPU" : "";
+  const label = { ready: `Ready${device ? " · " + device : ""}`, loading: "Starting…", error: "Engine error", offline: "Engine offline" };
   $("engine-pill").className = `engine-pill ${e.status}`;
   $("engine-text").textContent = label[e.status] || e.status;
   $("engine-alert").hidden = state.engineReady || e.status === "loading" || !e.problem;

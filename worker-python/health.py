@@ -1,5 +1,5 @@
 """Worker status published to Redis key `engine_health` (read by the Rust API's /api/engine).
-Run `python health.py` to load the model and print a one-line report."""
+Run `python health.py` to check the configuration and print a one-line report."""
 import json
 import time
 
@@ -12,7 +12,7 @@ def report(status: str, problem: str = "") -> dict:
     return {
         "ok": status == "ready",
         "status": status,  # loading | ready | error
-        "engine": "chatterbox",
+        "engine": "sarvam",
         "model": tts.MODEL,
         "model_label": tts.MODEL_LABEL,
         "device": tts.device(),

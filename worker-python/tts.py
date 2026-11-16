@@ -1,73 +1,69 @@
 """
-Chatterbox Turbo voice cloning engine (Resemble AI, MIT license). English only. Runs locally on GPU or CPU.
+Sarvam AI voice cloning engine (hosted API, https://docs.sarvam.ai/api-reference/voice-cloning/clone).
 
-One model instance per worker process. For each job the voice is conditioned once from
-the reference clip, the text is split into sentence-sized chunks, and the chunks are
-joined with a short pause. A fixed seed makes output repeatable for the same input.
+Each request sends the prepared reference clip (`ref_audio`, at most 15 s) and up to 1000
+characters of text, and gets back base64 audio in that voice. Longer text is split into
+sentence-sized chunks, synthesized one by one, and joined with a short pause.
+
+Languages: English (Indian) plus 11 Indian languages. Set SARVAM_LANGUAGE to force one,
+or leave it empty to let Sarvam detect the language from the text.
 """
+import base64
+import io
 import logging
 import re
-import threading
+import subprocess
+import tempfile
+import time
+import wave
 from pathlib import Path
 from typing import List, Optional
 
-from settings import CHATTERBOX_DEVICE, CHATTERBOX_SEED
+import requests
+
+from settings import (
+    SARVAM_API_KEY,
+    SARVAM_API_URL,
+    SARVAM_LANGUAGE,
+    SARVAM_REMOVE_NOISE,
+    SARVAM_TIMEOUT,
+)
 
 logger = logging.getLogger(__name__)
 
-MODEL = "turbo"
-MODEL_LABEL = "English (Turbo, 350M)"
-MAX_CHUNK_CHARS = 250
+MODEL = "sarvam-voice-clone"
+MODEL_LABEL = "Sarvam AI voice cloning"
+MAX_CHUNK_CHARS = 900  # API limit is 1000 characters per request
+REFERENCE_MAX_SECONDS = 15.0  # API limit for ref_audio
+SAMPLE_RATE = 24000
 PAUSE_SECONDS = 0.25
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+MAX_ATTEMPTS = 4
 
-_lock = threading.Lock()
-_model = None
-_device = None
+LANGUAGES = {"as-IN", "bn-IN", "en-IN", "gu-IN", "hi-IN", "kn-IN", "ml-IN", "mr-IN", "od-IN", "pa-IN", "ta-IN", "te-IN"}
+
+
+class SarvamError(RuntimeError):
+    pass
 
 
 def device() -> Optional[str]:
-    return _device
-
-
-def _pick_device() -> str:
-    import torch
-
-    if CHATTERBOX_DEVICE in ("cpu", "cuda"):
-        return CHATTERBOX_DEVICE
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
-
-def _load(on: str):
-    from chatterbox.tts_turbo import ChatterboxTurboTTS
-
-    return ChatterboxTurboTTS.from_pretrained(device=on)
+    return "cloud"
 
 
 def load() -> None:
-    """Load (and on first run download) the model. Falls back to CPU if the GPU runs out of memory."""
-    global _model, _device
-    with _lock:
-        if _model is not None:
-            return
-        target = _pick_device()
-        logger.info(f"Loading Chatterbox Turbo on {target} (first run downloads ~1-2 GB)...")
-        try:
-            _model, _device = _load(target), target
-        except Exception as e:
-            if target != "cuda" or "out of memory" not in str(e).lower():
-                raise
-            logger.warning("GPU out of memory while loading; falling back to CPU (slower).")
-            import torch
-
-            torch.cuda.empty_cache()
-            _model, _device = _load("cpu"), "cpu"
-        logger.info(f"Chatterbox ready on {_device}.")
+    """Nothing to download; just check the configuration so the dashboard shows a clear problem."""
+    if not SARVAM_API_KEY:
+        raise SarvamError("SARVAM_API_KEY is not set. Add your key from https://dashboard.sarvam.ai to .env.")
+    if SARVAM_LANGUAGE and SARVAM_LANGUAGE not in LANGUAGES:
+        raise SarvamError(f"SARVAM_LANGUAGE={SARVAM_LANGUAGE!r} is not supported. Use one of {sorted(LANGUAGES)} or leave it empty.")
+    logger.info(f"Sarvam voice cloning ready ({SARVAM_API_URL}, language: {SARVAM_LANGUAGE or 'auto'}).")
 
 
 def split_text(text: str, limit: int = MAX_CHUNK_CHARS) -> List[str]:
     """Sentence-aware chunks of at most `limit` chars (long sentences split on commas, then words)."""
     text = re.sub(r"\s+", " ", text).strip()
-    sentences = re.split(r"(?<=[.!?。！？])\s+", text)
+    sentences = re.split(r"(?<=[.!?।॥。！？])\s+", text)
     pieces: List[str] = []
     for s in sentences:
         while len(s) > limit:
@@ -86,24 +82,103 @@ def split_text(text: str, limit: int = MAX_CHUNK_CHARS) -> List[str]:
     return chunks
 
 
-def synthesize(reference_wav: Path, text: str, out_wav: Path) -> None:
-    """Speak `text` in the voice of `reference_wav`; writes a mono WAV at the model's sample rate."""
-    import torch
-    import torchaudio
+def _reference_bytes(reference_wav: Path) -> bytes:
+    """The reference as WAV bytes, cut to the API's 15 s limit (older references may be up to 20 s)."""
+    with wave.open(str(reference_wav), "rb") as w:
+        seconds = w.getnframes() / float(w.getframerate())
+    if seconds <= REFERENCE_MAX_SECONDS:
+        return reference_wav.read_bytes()
+    with tempfile.TemporaryDirectory() as tmp:
+        cut = Path(tmp) / "ref.wav"
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(reference_wav), "-t", str(REFERENCE_MAX_SECONDS - 0.5), str(cut)],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            raise SarvamError(f"Could not trim the reference clip: {proc.stderr.strip()[-300:]}")
+        return cut.read_bytes()
 
-    load()
+
+def _error_message(resp: requests.Response) -> str:
+    try:
+        err = resp.json().get("error", {})
+        msg, rid = err.get("message"), err.get("request_id")
+    except Exception:  # noqa: BLE001
+        msg, rid = resp.text[:300], None
+    friendly = {
+        402: "Sarvam quota exceeded. Top up credits at https://dashboard.sarvam.ai.",
+        403: "Sarvam rejected the API key. Check SARVAM_API_KEY.",
+    }.get(resp.status_code)
+    text = friendly or f"Sarvam API error {resp.status_code}: {msg or 'unknown error'}"
+    return f"{text} (request {rid})" if rid else text
+
+
+def _clone_chunk(ref_audio: bytes, text: str) -> bytes:
+    """One API call; returns WAV bytes. Retries rate limits and transient server errors."""
+    data = {
+        "text": text,
+        "output_audio_codec": "wav",
+        "speech_sample_rate": str(SAMPLE_RATE),
+    }
+    if SARVAM_LANGUAGE:
+        data["language_code"] = SARVAM_LANGUAGE
+    if SARVAM_REMOVE_NOISE:
+        data["remove_background_noise"] = "true"
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            resp = requests.post(
+                SARVAM_API_URL,
+                headers={"api-subscription-key": SARVAM_API_KEY},
+                data=data,
+                files={"ref_audio": ("reference.wav", ref_audio, "audio/wav")},
+                timeout=SARVAM_TIMEOUT,
+            )
+        except requests.RequestException as e:
+            if attempt == MAX_ATTEMPTS:
+                raise SarvamError(f"Could not reach Sarvam: {e}") from e
+            time.sleep(2 ** attempt)
+            continue
+        if resp.ok:
+            body = resp.json()
+            b64 = body.get("audio_b64") or body.get("audio")
+            if not b64:
+                raise SarvamError(f"Sarvam returned no audio (request {body.get('request_id')}).")
+            return base64.b64decode(b64)
+        if resp.status_code in RETRY_STATUSES and attempt < MAX_ATTEMPTS:
+            logger.warning(f"Sarvam {resp.status_code}; retrying ({attempt}/{MAX_ATTEMPTS})")
+            time.sleep(2 ** attempt)
+            continue
+        raise SarvamError(_error_message(resp))
+    raise SarvamError("Sarvam request failed.")
+
+
+def synthesize(reference_wav: Path, text: str, out_wav: Path) -> None:
+    """Speak `text` in the voice of `reference_wav`; writes a mono 16-bit WAV at 24 kHz."""
+    if not SARVAM_API_KEY:
+        raise SarvamError("SARVAM_API_KEY is not set.")
     chunks = split_text(text)
     if not chunks:
         raise ValueError("Text is empty.")
 
-    with _lock:  # one generation at a time per model instance
-        torch.manual_seed(CHATTERBOX_SEED)
-        _model.prepare_conditionals(str(reference_wav))
-        pause = torch.zeros(1, int(_model.sr * PAUSE_SECONDS))
-        parts = []
-        for i, chunk in enumerate(chunks):
-            wav = _model.generate(chunk)
-            parts.append(wav.cpu())
-            if i < len(chunks) - 1:
-                parts.append(pause)
-        torchaudio.save(str(out_wav), torch.cat(parts, dim=1), _model.sr)
+    ref = _reference_bytes(reference_wav)
+    frames: List[bytes] = []
+    params = None
+    for i, chunk in enumerate(chunks):
+        with wave.open(io.BytesIO(_clone_chunk(ref, chunk)), "rb") as w:
+            if params is None:
+                params = w.getparams()
+            elif (w.getnchannels(), w.getsampwidth(), w.getframerate()) != (
+                params.nchannels, params.sampwidth, params.framerate
+            ):
+                raise SarvamError("Sarvam returned audio chunks in different formats.")
+            frames.append(w.readframes(w.getnframes()))
+        if i < len(chunks) - 1:
+            frames.append(b"\x00" * int(params.framerate * PAUSE_SECONDS) * params.sampwidth * params.nchannels)
+
+    with wave.open(str(out_wav), "wb") as out:
+        out.setnchannels(params.nchannels)
+        out.setsampwidth(params.sampwidth)
+        out.setframerate(params.framerate)
+        out.writeframes(b"".join(frames))

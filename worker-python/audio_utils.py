@@ -4,8 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
-REFERENCE_MAX_SECONDS = 20  # Chatterbox conditions on the first ~10-15 s
-MIN_SPEECH_SECONDS = 6.0  # Chatterbox requires > 5 s of reference audio
+REFERENCE_MAX_SECONDS = 15  # Sarvam accepts reference clips of at most 15 s
+MIN_SPEECH_SECONDS = 6.0  # enough speech for a stable clone
 
 
 class AudioError(RuntimeError):

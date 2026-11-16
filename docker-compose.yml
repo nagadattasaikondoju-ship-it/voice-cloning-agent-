@@ -1,8 +1,6 @@
-# Full stack: http://localhost:5500 (dashboard) -> :8080 (Rust API) -> Redis -> worker (Chatterbox)
+# Full stack: http://localhost:5500 (dashboard) -> :8080 (Rust API) -> Redis -> worker (Sarvam AI API)
 #                                                    \-> :8000 (Whisper: consent check, audio -> script)
-# Usage: cp .env.example .env  (set JWT_SECRET), then:
-#   NVIDIA GPU: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
-#   CPU only:   docker compose up --build    (set TORCH_VARIANT=cpu in .env for a smaller image)
+# Usage: cp .env.example .env  (set JWT_SECRET and SARVAM_API_KEY), then: docker compose up --build
 
 services:
   postgres:
@@ -70,10 +68,7 @@ services:
       - private_storage:/app/private_storage
 
   worker-python:
-    build:
-      context: ./worker-python
-      args:
-        TORCH_VARIANT: ${TORCH_VARIANT:-cu124}
+    build: ./worker-python
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -83,10 +78,11 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/voiceclone
       REDIS_URL: redis://redis:6379/0
       STORAGE_DIR: /app/private_storage
-      CHATTERBOX_DEVICE: ${CHATTERBOX_DEVICE:-auto}
+      SARVAM_API_KEY: ${SARVAM_API_KEY:?Set SARVAM_API_KEY in .env (https://dashboard.sarvam.ai)}
+      SARVAM_LANGUAGE: ${SARVAM_LANGUAGE:-}
+      SARVAM_REMOVE_NOISE: ${SARVAM_REMOVE_NOISE:-false}
     volumes:
       - private_storage:/app/private_storage
-      - model_cache:/root/.cache/huggingface
 
   frontend:
     image: nginx:1.27-alpine
