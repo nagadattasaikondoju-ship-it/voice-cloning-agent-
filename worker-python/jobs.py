@@ -17,7 +17,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 import tts
-from audio_utils import finalize, prepare_reference
+from audio_utils import REFERENCE_MAX_SECONDS, finalize, prepare_reference
 from settings import DATABASE_URL
 from storage import path_for
 
@@ -47,6 +47,14 @@ def process_voice_clone_job(job: Dict[str, Any]) -> None:
     try:
         ref_key = f"references/{voice_id}.wav"
         seconds = prepare_reference(path_for(job["sample_storage_path"]), path_for(ref_key))
+        # The sample is the consent recording, so its verified transcript says what is in it.
+        # Skip it if the clip was cut at the length limit (the text would no longer match).
+        text = (job.get("reference_text") or "").strip()
+        ref_text = path_for(f"references/{voice_id}.txt")
+        if text and seconds < REFERENCE_MAX_SECONDS - 0.1 and len(text) <= 500:
+            ref_text.write_text(text, encoding="utf-8")
+        else:
+            ref_text.unlink(missing_ok=True)
         _execute(
             "UPDATE voice_clones SET status = 'ready', reference_audio_key = %s WHERE id = %s",
             (ref_key, clone_id),
@@ -94,4 +102,5 @@ def process_speech_job(job: Dict[str, Any]) -> None:
 
 def delete_voice_job(job: Dict[str, Any]) -> None:
     path_for(f"references/{job['voice_id']}.wav").unlink(missing_ok=True)
+    path_for(f"references/{job['voice_id']}.txt").unlink(missing_ok=True)
     logger.info(f"Deleted reference for {job['voice_id']}")

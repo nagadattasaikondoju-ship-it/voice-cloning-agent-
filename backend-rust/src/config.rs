@@ -8,8 +8,10 @@ pub struct Config {
     pub storage_dir: String,
     pub allowed_origins: Vec<String>,
     pub port: u16,
-    /// Base URL of the speech_pipeline service (Whisper STT) used to verify spoken consent.
-    pub speech_pipeline_url: String,
+    /// Sarvam AI key for speech-to-text (consent checks, audio -> script).
+    pub sarvam_api_key: String,
+    pub sarvam_stt_url: String,
+    pub sarvam_stt_model: String,
     /// Minimum word-level similarity (0..1) between the consent phrase and the transcript.
     pub consent_match_threshold: f64,
     pub consent_max_attempts: i32,
@@ -44,9 +46,9 @@ impl Config {
             storage_dir: env_or("STORAGE_DIR", "./private_storage"),
             allowed_origins,
             port: env_or("PORT", "8080").parse().unwrap_or(8080),
-            speech_pipeline_url: env_or("SPEECH_PIPELINE_URL", "http://localhost:8000")
-                .trim_end_matches('/')
-                .to_string(),
+            sarvam_api_key: env::var("SARVAM_API_KEY").unwrap_or_default().trim().to_string(),
+            sarvam_stt_url: env_or("SARVAM_STT_URL", "https://api.sarvam.ai/speech-to-text"),
+            sarvam_stt_model: env_or("SARVAM_STT_MODEL", "saaras:v3"),
             consent_match_threshold: env_or("CONSENT_MATCH_THRESHOLD", "0.75").parse().unwrap_or(0.75),
             consent_max_attempts: env_or("CONSENT_MAX_ATTEMPTS", "5").parse().unwrap_or(5),
         }

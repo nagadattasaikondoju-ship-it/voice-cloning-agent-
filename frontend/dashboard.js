@@ -1,12 +1,11 @@
 /**
  * Voice Studio: vanilla JS client for the Rust API.
- * Voices tab: sample -> spoken consent (Whisper-verified) -> name -> clone job.
+ * Voices tab: read a random phrase (Sarvam speech-to-text verifies it; the recording is the voice sample) -> name -> clone job.
  * Speak tab:  voice + script -> speech job -> private MP3 (fetched with the JWT).
  */
 const API = ((window.APP_CONFIG && window.APP_CONFIG.apiBaseUrl) || "http://localhost:8080").replace(/\/$/, "");
 const MAX_BYTES = 20 * 1024 * 1024;
-const MIN_SECONDS = 6;
-const MAX_SECONDS = 300;
+const MIN_CONSENT_SECONDS = 6;
 const MAX_CHARS = 5000;
 
 const $ = (id) => document.getElementById(id);
@@ -16,7 +15,6 @@ const state = {
   token: localStorage.getItem("auth_token"),
   user: null,
   engineReady: false,
-  sample: null, // { blob, name, seconds }
   consent: null, // server consent record
   consentBlob: null,
   voices: [],
@@ -118,7 +116,7 @@ async function signIn(token, user) {
   localStorage.setItem("auth_token", token);
   $("auth-modal").hidden = true;
   $("user-email").textContent = user.email;
-  await Promise.all([loadVoices(), loadHistory()]);
+  await Promise.all([loadVoices(), loadHistory(), state.consent ? null : newPhrase()]);
 }
 
 function signOut(reload = true) {
@@ -203,27 +201,8 @@ function goStep(n) {
     const s = Number(li.dataset.step);
     li.className = s < n ? "done" : s === n ? "active" : "";
   });
-  if (n === 2 && !state.consent) newPhrase();
-  if (n === 3) $("voice-name").focus();
-}
-
-function setSample(blob, name, seconds) {
-  const okLength = seconds >= MIN_SECONDS && seconds <= MAX_SECONDS;
-  state.sample = okLength && blob.size <= MAX_BYTES ? { blob, name, seconds } : null;
-  $("sample-audio").src = URL.createObjectURL(blob);
-  $("sample-preview").hidden = false;
-  $("sample-info").textContent = `${seconds.toFixed(1)} s · ${(blob.size / 1048576).toFixed(2)} MB`;
-  $("btn-step-1").disabled = !state.sample;
-  if (!okLength) toast(`Use ${MIN_SECONDS} s to 5 min of speech (this is ${seconds.toFixed(1)} s).`, "error");
-  else if (blob.size > MAX_BYTES) toast("Audio must be under 20 MB.", "error");
-}
-
-function loadSampleFile(file) {
-  const probe = new Audio();
-  probe.preload = "metadata";
-  probe.onloadedmetadata = () => setSample(file, file.name, isFinite(probe.duration) ? probe.duration : 0);
-  probe.onerror = () => toast("That file could not be read as audio.", "error");
-  probe.src = URL.createObjectURL(file);
+  if (n === 1 && !state.consent) newPhrase();
+  if (n === 2) $("voice-name").focus();
 }
 
 async function newPhrase() {
@@ -243,7 +222,7 @@ async function newPhrase() {
 }
 
 function updateVerifyButton() {
-  $("btn-step-2").disabled = !(state.consent && state.consentBlob && $("consent-check").checked);
+  $("btn-verify").disabled = !(state.consent && state.consentBlob && $("consent-check").checked);
 }
 
 function showResult(ok, html) {
@@ -254,8 +233,8 @@ function showResult(ok, html) {
 }
 
 async function verifyConsent() {
-  if (state.consent.verified) return goStep(3);
-  await busy($("btn-step-2"), "Checking…", async () => {
+  if (state.consent.verified) return goStep(2);
+  await busy($("btn-verify"), "Checking…", async () => {
     try {
       const form = new FormData();
       form.append("audio", state.consentBlob, `consent.${extFor(state.consentBlob.type)}`);
@@ -264,7 +243,7 @@ async function verifyConsent() {
       const heard = `<em>Heard: "${esc(r.transcript || "no speech detected")}"</em>`;
       if (r.verified) {
         showResult(true, `<strong>Verified</strong> (${Math.round(r.match_score * 100)}% match)${heard}`);
-        setTimeout(() => goStep(3), 600);
+        setTimeout(() => goStep(2), 600);
       } else {
         showResult(false, `<strong>Didn't match</strong> (${Math.round(r.match_score * 100)}%). Read the phrase exactly and try again. ${r.attempts_remaining} attempt(s) left.${heard}`);
         state.consentBlob = null;
@@ -280,16 +259,11 @@ async function verifyConsent() {
 
 async function createVoice(e) {
   e.preventDefault();
-  await busy($("btn-create"), "Uploading…", async (say) => {
+  await busy($("btn-create"), "Creating…", async () => {
     try {
-      const form = new FormData();
-      form.append("audio", state.sample.blob, state.sample.name);
-      form.append("duration", state.sample.seconds.toFixed(2));
-      const sample = await api("/api/voice-samples", { method: "POST", form });
-      say("Creating…");
       const voice = await api("/api/voice-clones", {
         method: "POST",
-        json: { consent_id: state.consent.id, sample_id: sample.id, display_name: $("voice-name").value.trim() },
+        json: { consent_id: state.consent.id, display_name: $("voice-name").value.trim() },
       });
       toast(`"${voice.display_name}" is being prepared.`, "success");
       resetCreate();
@@ -301,15 +275,13 @@ async function createVoice(e) {
 }
 
 function resetCreate() {
-  Object.assign(state, { sample: null, consent: null, consentBlob: null });
-  $("sample-preview").hidden = true;
+  Object.assign(state, { consent: null, consentBlob: null });
   $("consent-preview").hidden = true;
   $("consent-result").hidden = true;
   $("consent-check").checked = false;
   $("voice-name").value = "";
-  $("btn-step-1").disabled = true;
-  document.querySelectorAll(".btn-record .label").forEach((l, i) => (l.textContent = i ? "Record phrase" : "Record"));
-  document.querySelectorAll(".btn-record .timer").forEach((t) => (t.textContent = "00:00"));
+  $("btn-record-consent").querySelector(".label").textContent = "Record phrase";
+  $("btn-record-consent").querySelector(".timer").textContent = "00:00";
   goStep(1);
 }
 
@@ -512,13 +484,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   // create a voice
-  recorder($("btn-record-sample"), $("sample-meter"), (blob, s) => setSample(blob, `sample.${extFor(blob.type)}`, s));
-  $("sample-file").addEventListener("change", (e) => {
-    if (e.target.files[0]) loadSampleFile(e.target.files[0]);
-    e.target.value = "";
-  });
-  $("btn-step-1").addEventListener("click", () => goStep(2));
-  recorder($("btn-record-consent"), $("consent-meter"), (blob) => {
+  recorder($("btn-record-consent"), $("consent-meter"), (blob, seconds) => {
+    if (seconds < MIN_CONSENT_SECONDS) {
+      state.consentBlob = null;
+      updateVerifyButton();
+      return toast(`That was ${seconds.toFixed(1)} s. Read the whole phrase (at least ${MIN_CONSENT_SECONDS} s).`, "error");
+    }
+    if (blob.size > MAX_BYTES) return toast("Recording must be under 20 MB.", "error");
     state.consentBlob = blob;
     $("consent-audio").src = URL.createObjectURL(blob);
     $("consent-preview").hidden = false;
@@ -527,9 +499,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   $("btn-new-phrase").addEventListener("click", newPhrase);
   $("consent-check").addEventListener("change", updateVerifyButton);
-  $("btn-step-2").addEventListener("click", verifyConsent);
+  $("btn-verify").addEventListener("click", verifyConsent);
   document.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => goStep(Number(b.dataset.back))));
-  $("step-3").addEventListener("submit", createVoice);
+  $("step-2").addEventListener("submit", createVoice);
 
   // lists (event delegation)
   $("btn-refresh-voices").addEventListener("click", loadVoices);

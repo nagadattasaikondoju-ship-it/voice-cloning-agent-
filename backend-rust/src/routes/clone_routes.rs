@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Multipart, Path, State},
+    extract::{Path, State},
     Json,
 };
 use serde_json::{json, Value};
@@ -9,62 +9,13 @@ use crate::{
     auth::AuthUser,
     db::{enqueue, record_audit_log, AppState},
     error::{ApiError, ApiResult},
-    models::{
-        CloneWorkerJob, CreateVoiceCloneRequest, DeleteVoiceWorkerJob, VoiceClone, VoiceSample, CLONE_COLUMNS,
-    },
-    routes::{meta_routes::require_engine, read_audio_upload},
+    models::{CloneWorkerJob, CreateVoiceCloneRequest, DeleteVoiceWorkerJob, VoiceClone, CLONE_COLUMNS},
+    routes::meta_routes::require_engine,
     storage,
 };
 
-/// At least 6 s of speech for a stable clone; silence is trimmed by the worker.
-const MIN_SAMPLE_SECONDS: f64 = 6.0;
-const SAMPLE_COLUMNS: &str = "id, user_id, storage_key, mime_type, duration_seconds, file_size_bytes, created_at";
-
-pub async fn upload_voice_sample(
-    auth: AuthUser,
-    State(state): State<AppState>,
-    multipart: Multipart,
-) -> ApiResult<VoiceSample> {
-    let upload = read_audio_upload(multipart).await?;
-    let (ext, mime) = storage::audio_mime_for(upload.file_name.as_deref(), upload.content_type.as_deref())
-        .ok_or_else(|| ApiError::bad_request("Unsupported audio format (use mp3, m4a, wav, webm or ogg)"))?;
-
-    let duration: f64 = upload.fields.get("duration").and_then(|d| d.parse().ok()).unwrap_or(0.0);
-    if duration > 0.0 && !(MIN_SAMPLE_SECONDS..=300.0).contains(&duration) {
-        return Err(ApiError::bad_request("Voice samples must be between 6 seconds and 5 minutes long"));
-    }
-
-    let sample_id = Uuid::new_v4();
-    let key = format!("samples/{sample_id}.{ext}");
-    storage::save(&state.config.storage_dir, &key, &upload.bytes).await?;
-
-    let sample: VoiceSample = sqlx::query_as(&format!(
-        "INSERT INTO voice_samples (id, user_id, storage_key, mime_type, duration_seconds, file_size_bytes)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING {SAMPLE_COLUMNS}"
-    ))
-    .bind(sample_id)
-    .bind(auth.user_id)
-    .bind(&key)
-    .bind(mime)
-    .bind(duration)
-    .bind(upload.bytes.len() as i64)
-    .fetch_one(&state.db)
-    .await?;
-
-    record_audit_log(&state.db, Some(auth.user_id), "sample_uploaded", json!({ "sample_id": sample.id })).await;
-    Ok(Json(sample))
-}
-
-pub async fn get_voice_samples(auth: AuthUser, State(state): State<AppState>) -> ApiResult<Vec<VoiceSample>> {
-    let samples = sqlx::query_as(&format!(
-        "SELECT {SAMPLE_COLUMNS} FROM voice_samples WHERE user_id = $1 ORDER BY created_at DESC"
-    ))
-    .bind(auth.user_id)
-    .fetch_all(&state.db)
-    .await?;
-    Ok(Json(samples))
-}
-
+/// Creates a voice from a verified consent. The consent recording itself is the voice sample,
+/// so the cloned voice is the one that read the server's random phrase. Each consent makes one voice.
 pub async fn create_voice_clone(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -76,30 +27,54 @@ pub async fn create_voice_clone(
     }
     require_engine(&state).await?;
 
-    // 1. Consent must belong to this user and have passed speech verification.
-    let verified: Option<bool> = sqlx::query_scalar("SELECT verified FROM consents WHERE id = $1 AND user_id = $2")
-        .bind(body.consent_id)
-        .bind(auth.user_id)
-        .fetch_optional(&state.db)
-        .await?;
-    match verified {
-        Some(true) => {}
-        Some(false) => return Err(ApiError::forbidden("Voice cloning rejected: spoken consent has not been verified")),
-        None => return Err(ApiError::forbidden("Voice cloning rejected: consent record not found")),
-    }
+    let mut tx = state.db.begin().await?;
 
-    // 2. The sample must belong to this user.
-    let sample: VoiceSample = sqlx::query_as(&format!(
-        "SELECT {SAMPLE_COLUMNS} FROM voice_samples WHERE id = $1 AND user_id = $2"
-    ))
-    .bind(body.sample_id)
+    // Claim the consent atomically: it must be this user's, verified, recorded, and unused.
+    let claimed: Option<(String, Option<String>)> = sqlx::query_as(
+        "UPDATE consents SET used_at = NOW()
+         WHERE id = $1 AND user_id = $2 AND verified AND used_at IS NULL AND consent_audio_key IS NOT NULL
+         RETURNING consent_audio_key, transcript",
+    )
+    .bind(body.consent_id)
     .bind(auth.user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| ApiError::not_found("Voice sample not found"))?;
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some((audio_key, transcript)) = claimed else {
+        let status: Option<(bool, bool)> =
+            sqlx::query_as("SELECT verified, used_at IS NOT NULL FROM consents WHERE id = $1 AND user_id = $2")
+                .bind(body.consent_id)
+                .bind(auth.user_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        return Err(match status {
+            None => ApiError::forbidden("Voice cloning rejected: consent record not found"),
+            Some((false, _)) => ApiError::forbidden("Voice cloning rejected: spoken consent has not been verified"),
+            Some((true, true)) => ApiError::forbidden("This consent was already used to create a voice. Record a new phrase."),
+            Some((true, false)) => ApiError::forbidden("Voice cloning rejected: the consent recording is missing"),
+        });
+    };
+
+    let size = tokio::fs::metadata(storage::resolve(&state.config.storage_dir, &audio_key))
+        .await
+        .map(|m| m.len() as i64)
+        .map_err(|_| ApiError::bad_request("The consent recording is missing. Record a new phrase."))?;
+    let mime = storage::audio_mime_for(Some(&audio_key), None).map(|(_, m)| m).unwrap_or("audio/webm");
+
+    let sample_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO voice_samples (id, user_id, storage_key, mime_type, duration_seconds, file_size_bytes)
+         VALUES ($1, $2, $3, $4, 0, $5)",
+    )
+    .bind(sample_id)
+    .bind(auth.user_id)
+    .bind(&audio_key)
+    .bind(mime)
+    .bind(size)
+    .execute(&mut *tx)
+    .await?;
 
     let voice_id = format!("voice_{}", &Uuid::new_v4().simple().to_string()[..20]);
-
     let clone: VoiceClone = sqlx::query_as(&format!(
         "INSERT INTO voice_clones (id, user_id, consent_id, sample_id, display_name, voice_id, engine, status)
          VALUES ($1, $2, $3, $4, $5, $6, 'sarvam', 'queued') RETURNING {CLONE_COLUMNS}"
@@ -107,24 +82,31 @@ pub async fn create_voice_clone(
     .bind(Uuid::new_v4())
     .bind(auth.user_id)
     .bind(body.consent_id)
-    .bind(sample.id)
+    .bind(sample_id)
     .bind(display_name)
     .bind(&voice_id)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     let job = CloneWorkerJob {
         job_id: clone.id,
         user_id: auth.user_id,
         voice_id,
-        sample_storage_path: sample.storage_key,
+        sample_storage_path: audio_key,
+        reference_text: transcript,
     };
     if let Err(e) = enqueue(&state.redis, "voice_clone_jobs", &job).await {
-        sqlx::query("UPDATE voice_clones SET status = 'failed', error_message = 'Queue unavailable' WHERE id = $1")
+        tracing::error!("Failed to enqueue clone job: {e:?}");
+        // Give the consent back so the user can retry without re-recording.
+        sqlx::query("UPDATE voice_clones SET status = 'failed', error_message = 'Queue unavailable', deleted_at = NOW() WHERE id = $1")
             .bind(clone.id)
             .execute(&state.db)
             .await?;
-        tracing::error!("Failed to enqueue clone job: {e:?}");
+        sqlx::query("UPDATE consents SET used_at = NULL WHERE id = $1")
+            .bind(body.consent_id)
+            .execute(&state.db)
+            .await?;
         return Err(ApiError::unavailable("Job queue is unavailable. Try again shortly."));
     }
 

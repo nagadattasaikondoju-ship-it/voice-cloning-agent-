@@ -54,11 +54,12 @@ pub struct Consent {
     pub match_score: Option<f64>,
     pub attempts: i32,
     pub verified_at: Option<DateTime<Utc>>,
+    pub used_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
 pub const CONSENT_COLUMNS: &str = "id, user_id, consent_audio_key, spoken_phrase, consent_version, verified, \
-     transcript, match_score, attempts, verified_at, created_at";
+     transcript, match_score, attempts, verified_at, used_at, created_at";
 
 #[derive(Debug, Serialize)]
 pub struct ConsentVerification {
@@ -68,22 +69,6 @@ pub struct ConsentVerification {
     pub threshold: f64,
     pub attempts_remaining: i32,
     pub consent: Consent,
-}
-
-// ---------- Voice samples ----------
-
-#[allow(dead_code)] // some columns are loaded for completeness but not read
-#[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct VoiceSample {
-    pub id: Uuid,
-    #[serde(skip)]
-    pub user_id: Uuid,
-    #[serde(skip)]
-    pub storage_key: String,
-    pub mime_type: String,
-    pub duration_seconds: f64,
-    pub file_size_bytes: i64,
-    pub created_at: DateTime<Utc>,
 }
 
 // ---------- Voice clones ----------
@@ -112,7 +97,6 @@ pub const CLONE_COLUMNS: &str =
 #[derive(Debug, Deserialize)]
 pub struct CreateVoiceCloneRequest {
     pub consent_id: Uuid,
-    pub sample_id: Uuid,
     pub display_name: String,
 }
 
@@ -170,6 +154,8 @@ pub struct CloneWorkerJob {
     pub user_id: Uuid,
     pub voice_id: String,
     pub sample_storage_path: String,
+    /// What was said in the sample (the verified consent transcript); improves clone fidelity.
+    pub reference_text: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

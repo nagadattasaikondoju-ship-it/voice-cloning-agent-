@@ -1,9 +1,8 @@
-//! Spoken-consent verification: issue a phrase, transcribe the user's recording with the
-//! speech_pipeline (faster-whisper), and compare the transcript to the phrase.
+//! Spoken-consent verification: issue a phrase, transcribe the user's recording with
+//! Sarvam speech-to-text, and compare the transcript to the phrase.
 
 use rand::seq::SliceRandom;
 
-/// Phrases are long and specific so a generic recording cannot pass by accident.
 /// Phrases are long and specific so a generic recording cannot pass by accident.
 /// Wording avoids words with regional spellings (authorise/authorize) that ASR may vary.
 const CONSENT_TEMPLATES: &[&str] = &[

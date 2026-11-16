@@ -38,7 +38,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env();
-    tracing::info!("Speech pipeline: {}", config.speech_pipeline_url);
+    if config.sarvam_api_key.is_empty() {
+        tracing::warn!("SARVAM_API_KEY is not set: consent checks and audio transcription will fail.");
+    }
 
     let db = init_db(&config.database_url).await?;
     let redis = redis::Client::open(config.redis_url.clone())?;
@@ -63,14 +65,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/login", post(auth_routes::login))
         .route("/api/auth/logout", post(auth_routes::logout))
         .route("/api/auth/me", get(auth_routes::me))
-        // Consent (phrase issued by server, verified via Whisper)
+        // Consent (phrase issued by server, verified with Sarvam speech-to-text)
         .route("/api/consents", post(consent_routes::create_consent).get(consent_routes::get_consents))
         .route("/api/consents/:id/verify", post(consent_routes::verify_consent))
-        // Samples & clones
-        .route(
-            "/api/voice-samples",
-            post(clone_routes::upload_voice_sample).get(clone_routes::get_voice_samples),
-        )
+        // Clones (the verified consent recording is the voice sample)
         .route(
             "/api/voice-clones",
             post(clone_routes::create_voice_clone).get(clone_routes::get_voice_clones),

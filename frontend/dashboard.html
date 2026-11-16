@@ -43,32 +43,15 @@
         <div class="card-head">
           <h2>Create a voice</h2>
           <ol class="steps" aria-label="Progress">
-            <li class="active" data-step="1">Sample</li>
-            <li data-step="2">Consent</li>
-            <li data-step="3">Name</li>
+            <li class="active" data-step="1">Record</li>
+            <li data-step="2">Name</li>
           </ol>
         </div>
 
-        <!-- Step 1: sample -->
+        <!-- Step 1: one recording is both the spoken consent and the voice sample -->
         <div class="step active" id="step-1">
-          <p class="muted">Record or upload <strong>10–30 seconds</strong> of your own voice: clear speech, quiet room, no music.</p>
-          <div class="row">
-            <button class="btn btn-record" id="btn-record-sample" type="button"><span class="rec-dot"></span><span class="label">Record</span> <span class="timer">00:00</span></button>
-            <span class="muted">or</span>
-            <label class="btn btn-ghost" for="sample-file"><i class="fa-solid fa-upload"></i> Upload audio</label>
-            <input type="file" id="sample-file" accept="audio/*,.mp3,.m4a,.wav,.webm,.ogg" hidden />
-          </div>
-          <div class="meter"><div id="sample-meter"></div></div>
-          <div class="preview" id="sample-preview" hidden>
-            <audio controls id="sample-audio"></audio>
-            <span class="muted" id="sample-info"></span>
-          </div>
-          <div class="actions"><button class="btn btn-primary" id="btn-step-1" disabled>Next <i class="fa-solid fa-arrow-right"></i></button></div>
-        </div>
-
-        <!-- Step 2: spoken consent -->
-        <div class="step" id="step-2">
-          <p class="muted">Read this sentence aloud. The server transcribes it and only allows cloning if it matches.</p>
+          <p class="muted">Read this sentence aloud in your normal voice, in a quiet room. This one recording is your
+            consent <strong>and</strong> the sample your voice is cloned from, so only the person speaking can be cloned.</p>
           <blockquote class="phrase" id="consent-phrase">Loading…</blockquote>
           <div class="row">
             <button class="btn btn-record" id="btn-record-consent" type="button"><span class="rec-dot"></span><span class="label">Record phrase</span> <span class="timer">00:00</span></button>
@@ -79,16 +62,15 @@
           <label class="check"><input type="checkbox" id="consent-check" /> <span>This is my own voice and I agree to create a private clone of it for this account.</span></label>
           <div class="result" id="consent-result" hidden></div>
           <div class="actions">
-            <button class="btn btn-ghost" data-back="1"><i class="fa-solid fa-arrow-left"></i> Back</button>
-            <button class="btn btn-primary" id="btn-step-2" disabled>Verify <i class="fa-solid fa-arrow-right"></i></button>
+            <button class="btn btn-primary" id="btn-verify" disabled>Verify <i class="fa-solid fa-arrow-right"></i></button>
           </div>
         </div>
 
-        <!-- Step 3: name -->
-        <form class="step" id="step-3">
+        <!-- Step 2: name -->
+        <form class="step" id="step-2">
           <label class="field">Voice name <input type="text" id="voice-name" maxlength="80" placeholder="e.g. My narration voice" required /></label>
           <div class="actions">
-            <button class="btn btn-ghost" type="button" data-back="2"><i class="fa-solid fa-arrow-left"></i> Back</button>
+            <button class="btn btn-ghost" type="button" data-back="1"><i class="fa-solid fa-arrow-left"></i> Back</button>
             <button class="btn btn-primary" id="btn-create" type="submit"><i class="fa-solid fa-wand-magic-sparkles"></i> Create voice</button>
           </div>
         </form>

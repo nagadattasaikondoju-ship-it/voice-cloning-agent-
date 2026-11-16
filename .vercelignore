@@ -1,4 +1,4 @@
-# Vercel serves only the static site; the API, worker and Whisper service run on your own machine.
+# Vercel serves only the static site; the API and worker run on your own machine.
 /*
 !index.html
 !styles.css
