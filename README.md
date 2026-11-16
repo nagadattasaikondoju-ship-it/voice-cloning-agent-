@@ -25,7 +25,7 @@ from, so the voice that is cloned is the voice that consented. Each consent crea
     ├──► PostgreSQL   users, consents, voice_samples, voice_clones, speech_jobs, generated_audio, audit_logs
     ├──► Redis        job queues: voice_clone_jobs · speech_jobs · delete_voice_jobs (JSON)
     │                 engine_health (worker heartbeat, every 30 s)
-    └──► private_storage/   consents/ references/ generated/   (shared with the worker)
+                      audio in the blobs table: consents/ references/ generated/ (shared with the worker)
                    │
                    ▼
  Python worker ──► Sarvam AI  POST https://api.sarvam.ai/voices/clone
@@ -78,16 +78,32 @@ docker compose up --build
 
 Nothing large is downloaded: speech-to-text and voice cloning both run on Sarvam.
 
-## Hosted dashboard (Vercel)
+## Public deployment (free: Render + Neon)
 
-The web pages are also published at **https://voice-cloning-studio-beta.vercel.app**
-(dashboard: `/frontend/dashboard.html`). Only the static files are on Vercel (`.vercelignore`); the API,
-and voice worker still run on **your** machine through Docker. The hosted page calls `http://localhost:8080`,
-so it works only in a browser on the computer running the stack.
+`Dockerfile` at the repo root builds **one container** with the API, the voice worker, Redis (job queue only) and
+the website. Audio is stored in Postgres, so the host needs no disk. `render.yaml` describes it for Render.
 
-- `ALLOWED_ORIGINS` in `.env` must include the Vercel URL (it does in `.env.example`).
-- Chrome may ask to allow access to devices on your local network. Click **Allow**.
-- Other people opening the link see the pages but cannot use them unless they run the stack themselves.
+1. Create a free Postgres database at https://neon.tech and copy its connection string.
+2. On https://render.com create a **Web Service** from this repo (Docker, Free plan), or a Blueprint from `render.yaml`.
+3. Set `DATABASE_URL` (the Neon string), `SARVAM_API_KEY` and `JWT_SECRET` (`openssl rand -hex 32`).
+4. Open `https://<service>.onrender.com`: the landing page, with the dashboard at `/frontend/dashboard.html`.
+
+Free Render services sleep after 15 minutes without traffic; the first request after that takes ~30 s.
+The static copy on Vercel (https://voice-cloning-studio-beta.vercel.app) calls the public API set in
+`frontend/config.js` (`PUBLIC_API_URL`); its origin must be in `ALLOWED_ORIGINS`.
+
+### Usage limits
+
+Every voice, clip and transcription spends Sarvam credits, so each account has limits (environment variables,
+0 = unlimited):
+
+| Variable | Default | What |
+|---|---|---|
+| `MAX_VOICES_PER_USER` | 3 | Active voices per account |
+| `DAILY_SPEECH_CHARS` | 2000 | Characters of speech per 24 h |
+| `DAILY_CONSENTS` | 10 | Consent phrases per 24 h |
+| `DAILY_TRANSCRIBE_SECONDS` | 600 | Seconds of audio → script per 24 h |
+| `AUTH_ATTEMPTS_PER_HOUR` | 20 | Sign-in and sign-up attempts per IP address |
 
 ## Local development (without Docker)
 
@@ -183,8 +199,7 @@ Audio (mp3, m4a, wav, webm, ogg) is transcribed with Sarvam (up to 15 min), so a
 - Audit log entries cover register, login, failed logins, consent issue/verify/fail, uploads, queueing and deletes.
 - Reference clips and text are sent to Sarvam AI to generate speech. Do not use it for audio you may not share with them.
 
-**Not done yet:** per-user usage limits (every generation spends Sarvam credits), rate limiting on login,
-and token revocation on logout.
+**Not done yet:** token revocation on logout, email verification, and deleting a voice's consent recording.
 
 ## Repository layout
 
@@ -193,7 +208,8 @@ backend-rust/      Axum API (src/routes/*, consent_check.rs, stt.rs, migrations/
 worker-python/     main.py (queue loop + heartbeat), tts.py (Sarvam API client), jobs.py, audio_utils.py, health.py
 frontend/          Dashboard (dashboard.html/.css/.js, config.js)
 index.html, styles.css   Landing page
-docker-compose.yml          Full stack
+docker-compose.yml          Full stack for local development (one container per service)
+Dockerfile, render.yaml     One-container build for free hosting (Render)
 ```
 
 ## License

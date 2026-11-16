@@ -6,8 +6,6 @@ use axum::{
     Json,
 };
 use serde_json::{json, Value};
-use tokio::fs::File;
-use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::{
@@ -36,6 +34,8 @@ pub async fn generate_speech(
     if text.chars().count() > MAX_TEXT_CHARS {
         return Err(ApiError::bad_request(format!("Text exceeds {MAX_TEXT_CHARS} characters")));
     }
+
+    crate::limits::check_speech_chars(&state, auth.user_id, text.chars().count() as i64).await?;
 
     let clone: VoiceClone = sqlx::query_as(&format!(
         "SELECT {CLONE_COLUMNS} FROM voice_clones WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL"
@@ -154,7 +154,7 @@ pub async fn delete_generated_audio(
     .await?
     .ok_or_else(|| ApiError::not_found("Audio not found"))?;
 
-    let _ = tokio::fs::remove_file(storage::resolve(&state.config.storage_dir, &audio.storage_key)).await;
+    storage::delete(&state.db, &audio.storage_key).await?;
     record_audit_log(&state.db, Some(auth.user_id), "generated_audio_deleted", json!({ "audio_id": audio.id })).await;
     Ok(Json(json!({ "message": "Audio deleted" })))
 }
@@ -174,9 +174,10 @@ pub async fn stream_audio(
             .await?
             .ok_or_else(|| ApiError::not_found("Audio not found"))?;
 
-    let path = storage::resolve(&state.config.storage_dir, &audio.storage_key);
-    let file = File::open(&path).await.map_err(|_| ApiError::not_found("Audio file missing"))?;
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_string();
+    let bytes = storage::load(&state.db, &audio.storage_key)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Audio file missing"))?;
+    let ext = audio.storage_key.rsplit('.').next().unwrap_or("mp3").to_string();
 
     Ok((
         [
@@ -187,7 +188,7 @@ pub async fn stream_audio(
             ),
             (header::CACHE_CONTROL, "private, no-store".to_string()),
         ],
-        Body::from_stream(ReaderStream::new(file)),
+        Body::from(bytes),
     )
         .into_response())
 }

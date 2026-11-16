@@ -31,6 +31,7 @@ pub async fn create_consent(
     State(state): State<AppState>,
     body: Option<Json<CreateConsentRequest>>,
 ) -> ApiResult<Consent> {
+    crate::limits::check_consents(&state, auth.user_id).await?;
     let version = body
         .and_then(|Json(b)| b.consent_version)
         .filter(|v| !v.trim().is_empty() && v.len() <= 32)
@@ -92,15 +93,15 @@ pub async fn verify_consent(
     }
 
     let upload = read_audio_upload(multipart).await?;
-    let (ext, _mime) = storage::audio_mime_for(upload.file_name.as_deref(), upload.content_type.as_deref())
+    let (ext, mime) = storage::audio_mime_for(upload.file_name.as_deref(), upload.content_type.as_deref())
         .ok_or_else(|| ApiError::bad_request("Unsupported audio format (use webm, wav, mp3, m4a or ogg)"))?;
 
     // Transcribe before counting the attempt, so an outage does not burn attempts.
-    let transcript = stt::transcribe(&state, &upload.bytes, ext, Some("en-IN"), MAX_CONSENT_SECONDS).await?;
+    let (transcript, _) = stt::transcribe(&state, &upload.bytes, ext, Some("en-IN"), MAX_CONSENT_SECONDS).await?;
 
     let attempt = consent.attempts + 1;
     let key = format!("consents/{}_{}.{}", consent.id, attempt, ext);
-    storage::save(&state.config.storage_dir, &key, &upload.bytes).await?;
+    storage::save(&state.db, auth.user_id, &key, mime, &upload.bytes).await?;
 
     let score = match_score(&consent.spoken_phrase, &transcript);
     let threshold = state.config.consent_match_threshold;

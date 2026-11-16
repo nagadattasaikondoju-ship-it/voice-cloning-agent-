@@ -10,6 +10,7 @@ pub struct AppState {
     pub redis: redis::Client,
     pub http: reqwest::Client,
     pub config: Config,
+    pub auth_limiter: crate::limits::AuthRateLimiter,
 }
 
 pub async fn init_db(database_url: &str) -> anyhow::Result<PgPool> {

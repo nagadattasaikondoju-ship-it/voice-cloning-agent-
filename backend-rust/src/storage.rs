@@ -1,4 +1,9 @@
-use std::path::{Path, PathBuf};
+//! Audio storage. Files live in the `blobs` table so the app works on hosts without a
+//! persistent disk. The Python worker reads and writes the same table.
+use std::path::Path;
+
+use sqlx::PgPool;
+use uuid::Uuid;
 
 use crate::error::ApiError;
 
@@ -29,20 +34,34 @@ pub fn audio_mime_for(file_name: Option<&str>, declared: Option<&str>) -> Option
     })
 }
 
-/// Writes bytes under `<storage_dir>/<key>`; keys are generated server-side.
-pub async fn save(storage_dir: &str, key: &str, bytes: &[u8]) -> Result<PathBuf, ApiError> {
-    let path = PathBuf::from(storage_dir).join(key);
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| ApiError::internal("Failed to create storage dir", e))?;
-    }
-    tokio::fs::write(&path, bytes)
-        .await
-        .map_err(|e| ApiError::internal("Failed to write audio file", e))?;
-    Ok(path)
+/// Stores bytes under `key` (keys are generated server-side).
+pub async fn save(db: &PgPool, user_id: Uuid, key: &str, mime: &str, bytes: &[u8]) -> Result<(), ApiError> {
+    sqlx::query(
+        "INSERT INTO blobs (key, user_id, mime_type, data) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, mime_type = EXCLUDED.mime_type",
+    )
+    .bind(key)
+    .bind(user_id)
+    .bind(mime)
+    .bind(bytes)
+    .execute(db)
+    .await
+    .map_err(|e| ApiError::internal("Failed to store audio", e))?;
+    Ok(())
 }
 
-pub fn resolve(storage_dir: &str, key: &str) -> PathBuf {
-    PathBuf::from(storage_dir).join(key)
+pub async fn load(db: &PgPool, key: &str) -> Result<Option<Vec<u8>>, ApiError> {
+    Ok(sqlx::query_scalar("SELECT data FROM blobs WHERE key = $1").bind(key).fetch_optional(db).await?)
+}
+
+pub async fn size(db: &PgPool, key: &str) -> Result<Option<i64>, ApiError> {
+    Ok(sqlx::query_scalar("SELECT octet_length(data)::BIGINT FROM blobs WHERE key = $1")
+        .bind(key)
+        .fetch_optional(db)
+        .await?)
+}
+
+pub async fn delete(db: &PgPool, key: &str) -> Result<(), ApiError> {
+    sqlx::query("DELETE FROM blobs WHERE key = $1").bind(key).execute(db).await?;
+    Ok(())
 }

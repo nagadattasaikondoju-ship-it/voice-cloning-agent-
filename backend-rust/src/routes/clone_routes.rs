@@ -26,6 +26,7 @@ pub async fn create_voice_clone(
         return Err(ApiError::bad_request("Voice name must be 1–80 characters"));
     }
     require_engine(&state).await?;
+    crate::limits::check_voice_count(&state, auth.user_id).await?;
 
     let mut tx = state.db.begin().await?;
 
@@ -55,10 +56,9 @@ pub async fn create_voice_clone(
         });
     };
 
-    let size = tokio::fs::metadata(storage::resolve(&state.config.storage_dir, &audio_key))
-        .await
-        .map(|m| m.len() as i64)
-        .map_err(|_| ApiError::bad_request("The consent recording is missing. Record a new phrase."))?;
+    let size = storage::size(&state.db, &audio_key)
+        .await?
+        .ok_or_else(|| ApiError::bad_request("The consent recording is missing. Record a new phrase."))?;
     let mime = storage::audio_mime_for(Some(&audio_key), None).map(|(_, m)| m).unwrap_or("audio/webm");
 
     let sample_id = Uuid::new_v4();

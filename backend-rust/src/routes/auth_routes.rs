@@ -1,4 +1,10 @@
-use axum::{extract::State, http::StatusCode, Json};
+use std::net::SocketAddr;
+
+use axum::{
+    extract::{ConnectInfo, State},
+    http::{HeaderMap, StatusCode},
+    Json,
+};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -15,7 +21,13 @@ fn issue_token(state: &AppState, user: User) -> ApiResult<AuthResponse> {
     Ok(Json(AuthResponse { token, user: user.into() }))
 }
 
-pub async fn register(State(state): State<AppState>, Json(body): Json<Credentials>) -> ApiResult<AuthResponse> {
+pub async fn register(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<Credentials>,
+) -> ApiResult<AuthResponse> {
+    state.auth_limiter.check(&state, &headers, peer)?;
     let email = body.email.trim().to_lowercase();
     if !email.contains('@') || email.len() > 254 {
         return Err(ApiError::bad_request("A valid email address is required"));
@@ -41,7 +53,13 @@ pub async fn register(State(state): State<AppState>, Json(body): Json<Credential
     issue_token(&state, user)
 }
 
-pub async fn login(State(state): State<AppState>, Json(body): Json<Credentials>) -> ApiResult<AuthResponse> {
+pub async fn login(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<Credentials>,
+) -> ApiResult<AuthResponse> {
+    state.auth_limiter.check(&state, &headers, peer)?;
     let email = body.email.trim().to_lowercase();
     let user: Option<User> =
         sqlx::query_as("SELECT id, email, password_hash, created_at FROM users WHERE email = $1")

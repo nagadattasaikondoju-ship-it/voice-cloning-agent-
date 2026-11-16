@@ -26,12 +26,12 @@ pub async fn transcribe(
     ext: &str,
     language: Option<&str>,
     max_seconds: f64,
-) -> Result<String, ApiError> {
+) -> Result<(String, f64), ApiError> {
     if state.config.sarvam_api_key.is_empty() {
         return Err(ApiError::unavailable("Speech recognition is not configured (SARVAM_API_KEY is missing)."));
     }
 
-    let dir = Path::new(&state.config.storage_dir).join("tmp").join(Uuid::new_v4().to_string());
+    let dir = std::env::temp_dir().join(format!("stt-{}", Uuid::new_v4()));
     tokio::fs::create_dir_all(&dir).await.map_err(|e| ApiError::internal("Failed to create temp dir", e))?;
     let result = transcribe_in(state, &dir, bytes, ext, language, max_seconds).await;
     let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -45,7 +45,7 @@ async fn transcribe_in(
     ext: &str,
     language: Option<&str>,
     max_seconds: f64,
-) -> Result<String, ApiError> {
+) -> Result<(String, f64), ApiError> {
     let input = dir.join(format!("input.{ext}"));
     tokio::fs::write(&input, bytes).await.map_err(|e| ApiError::internal("Failed to write temp audio", e))?;
 
@@ -83,8 +83,17 @@ async fn transcribe_in(
     segments.sort();
 
     let mut parts = Vec::new();
+    let mut total_seconds = 0.0;
     for seg in segments {
         let wav = tokio::fs::read(&seg).await.map_err(|e| ApiError::internal("Failed to read segment", e))?;
+        let seg_seconds = wav.len().saturating_sub(44) as f64 / 32_000.0; // 16 kHz, 16-bit mono
+        total_seconds += seg_seconds;
+        if total_seconds > max_seconds + 1.0 {
+            return Err(ApiError::bad_request(format!(
+                "Audio is longer than the {:.0} s allowed here.",
+                max_seconds
+            )));
+        }
         if wav.len() <= 44 + 3200 {
             continue; // header plus < 0.1 s of audio
         }
@@ -93,7 +102,7 @@ async fn transcribe_in(
             parts.push(text.trim().to_string());
         }
     }
-    Ok(parts.join(" "))
+    Ok((parts.join(" "), total_seconds))
 }
 
 async fn duration_seconds(path: &Path) -> Result<f64, ApiError> {
