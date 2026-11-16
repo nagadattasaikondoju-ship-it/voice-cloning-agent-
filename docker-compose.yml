@@ -1,5 +1,5 @@
 # Full stack: http://localhost:5500 (dashboard) -> :8080 (Rust API) -> Redis -> worker (Sarvam AI API)
-#                                                    \-> :8000 (Whisper: consent check, audio -> script)
+#                                     \-> Sarvam speech-to-text (consent check, audio -> script)
 # Usage: cp .env.example .env  (set JWT_SECRET and SARVAM_API_KEY), then: docker compose up --build
 
 services:
@@ -33,39 +33,21 @@ services:
       timeout: 5s
       retries: 10
 
-  speech-pipeline:
-    build: ./speech_pipeline
-    restart: unless-stopped
-    environment:
-      WHISPER_DEVICE: cpu
-      WHISPER_MODEL_CPU: ${WHISPER_MODEL_CPU:-base}
-      STORAGE_DIR: /app/storage
-      SQLITE_DB_PATH: /app/storage/pipeline.db
-    ports:
-      - "127.0.0.1:8000:8000"
-    volumes:
-      - pipeline_storage:/app/storage
-      - model_cache:/root/.cache/huggingface
-
   backend-rust:
     build: ./backend-rust
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
-      speech-pipeline: { condition: service_started }
     ports:
       - "127.0.0.1:8080:8080"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/voiceclone
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (openssl rand -hex 32)}
-      STORAGE_DIR: /app/private_storage
-      SPEECH_PIPELINE_URL: http://speech-pipeline:8000
+      SARVAM_API_KEY: ${SARVAM_API_KEY:?Set SARVAM_API_KEY in .env (https://dashboard.sarvam.ai)}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5500,http://127.0.0.1:5500}
       PORT: 8080
-    volumes:
-      - private_storage:/app/private_storage
 
   worker-python:
     build: ./worker-python
@@ -77,12 +59,9 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/voiceclone
       REDIS_URL: redis://redis:6379/0
-      STORAGE_DIR: /app/private_storage
       SARVAM_API_KEY: ${SARVAM_API_KEY:?Set SARVAM_API_KEY in .env (https://dashboard.sarvam.ai)}
       SARVAM_LANGUAGE: ${SARVAM_LANGUAGE:-}
       SARVAM_REMOVE_NOISE: ${SARVAM_REMOVE_NOISE:-false}
-    volumes:
-      - private_storage:/app/private_storage
 
   frontend:
     image: nginx:1.27-alpine
@@ -92,13 +71,9 @@ services:
     volumes:
       - ./index.html:/usr/share/nginx/html/index.html:ro
       - ./styles.css:/usr/share/nginx/html/styles.css:ro
-      - ./main.js:/usr/share/nginx/html/main.js:ro
       - ./assets:/usr/share/nginx/html/assets:ro
       - ./frontend:/usr/share/nginx/html/frontend:ro
 
 volumes:
   postgres_data:
   redis_data:
-  private_storage:
-  pipeline_storage:
-  model_cache:

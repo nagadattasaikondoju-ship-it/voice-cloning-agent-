@@ -114,7 +114,16 @@ def _error_message(resp: requests.Response) -> str:
     return f"{text} (request {rid})" if rid else text
 
 
-def _clone_chunk(ref_audio: bytes, text: str) -> bytes:
+def _reference_text(reference_wav: Path) -> Optional[str]:
+    """Transcript saved next to the reference (references/<voice>.txt), if any."""
+    path = reference_wav.with_suffix(".txt")
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8").strip()
+    return text if 0 < len(text) <= 500 else None
+
+
+def _clone_chunk(ref_audio: bytes, text: str, ref_text: Optional[str] = None) -> bytes:
     """One API call; returns WAV bytes. Retries rate limits and transient server errors."""
     data = {
         "text": text,
@@ -123,6 +132,8 @@ def _clone_chunk(ref_audio: bytes, text: str) -> bytes:
     }
     if SARVAM_LANGUAGE:
         data["language_code"] = SARVAM_LANGUAGE
+    if ref_text:
+        data["ref_text"] = ref_text
     if SARVAM_REMOVE_NOISE:
         data["remove_background_noise"] = "true"
 
@@ -163,10 +174,11 @@ def synthesize(reference_wav: Path, text: str, out_wav: Path) -> None:
         raise ValueError("Text is empty.")
 
     ref = _reference_bytes(reference_wav)
+    ref_text = _reference_text(reference_wav)
     frames: List[bytes] = []
     params = None
     for i, chunk in enumerate(chunks):
-        with wave.open(io.BytesIO(_clone_chunk(ref, chunk)), "rb") as w:
+        with wave.open(io.BytesIO(_clone_chunk(ref, chunk, ref_text)), "rb") as w:
             if params is None:
                 params = w.getparams()
             elif (w.getnchannels(), w.getsampwidth(), w.getframerate()) != (

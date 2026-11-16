@@ -26,7 +26,6 @@ private_storage/
 uploads/
 # Runtime data dirs only (app/storage/ is source code and must stay tracked)
 /storage/
-speech_pipeline/storage/
 *.db
 *.sqlite
 *.sqlite3

@@ -1,0 +1,26 @@
+# Render Blueprint: one free web service running the whole app (see Dockerfile).
+# The database is external (Neon free tier); paste its connection string as DATABASE_URL.
+services:
+  - type: web
+    name: voice-cloning-agent
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: https://voice-cloning-studio-beta.vercel.app
+      # Per-user limits (0 = unlimited); every request spends Sarvam credits.
+      - key: MAX_VOICES_PER_USER
+        value: "3"
+      - key: DAILY_SPEECH_CHARS
+        value: "2000"
+      - key: DAILY_TRANSCRIBE_SECONDS
+        value: "600"

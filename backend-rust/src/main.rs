@@ -3,6 +3,7 @@ mod config;
 mod consent_check;
 mod db;
 mod error;
+mod limits;
 mod models;
 mod routes;
 mod storage;
@@ -16,7 +17,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
@@ -38,12 +39,13 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env();
-    tracing::info!("Speech pipeline: {}", config.speech_pipeline_url);
+    if config.sarvam_api_key.is_empty() {
+        tracing::warn!("SARVAM_API_KEY is not set: consent checks and audio transcription will fail.");
+    }
 
     let db = init_db(&config.database_url).await?;
     let redis = redis::Client::open(config.redis_url.clone())?;
     let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(180)).build()?;
-    tokio::fs::create_dir_all(&config.storage_dir).await?;
 
     let origins: Vec<HeaderValue> = config.allowed_origins.iter().filter_map(|o| o.parse().ok()).collect();
     let cors = CorsLayer::new()
@@ -53,9 +55,9 @@ async fn main() -> anyhow::Result<()> {
         // Lets a hosted dashboard (e.g. on Vercel) call this API on localhost (Chrome private network access).
         .allow_private_network(true);
 
-    let state = AppState { db, redis, http, config: config.clone() };
+    let state = AppState { db, redis, http, config: config.clone(), auth_limiter: Default::default() };
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/api/health", get(meta_routes::health))
         .route("/api/engine", get(meta_routes::engine))
         // Auth
@@ -63,14 +65,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/login", post(auth_routes::login))
         .route("/api/auth/logout", post(auth_routes::logout))
         .route("/api/auth/me", get(auth_routes::me))
-        // Consent (phrase issued by server, verified via Whisper)
+        // Consent (phrase issued by server, verified with Sarvam speech-to-text)
         .route("/api/consents", post(consent_routes::create_consent).get(consent_routes::get_consents))
         .route("/api/consents/:id/verify", post(consent_routes::verify_consent))
-        // Samples & clones
-        .route(
-            "/api/voice-samples",
-            post(clone_routes::upload_voice_sample).get(clone_routes::get_voice_samples),
-        )
+        // Clones (the verified consent recording is the voice sample)
         .route(
             "/api/voice-clones",
             post(clone_routes::create_voice_clone).get(clone_routes::get_voice_clones),
@@ -86,7 +84,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/speech/audio/:id", delete(speech_routes::delete_generated_audio))
         .route("/api/audio/:id", get(speech_routes::stream_audio))
         // Audio -> script text for TTS
-        .route("/api/transcribe", post(transcribe_routes::transcribe_audio))
+        .route("/api/transcribe", post(transcribe_routes::transcribe_audio));
+    // One public URL: the API also serves the landing page and dashboard when PUBLIC_DIR is set.
+    if let Some(dir) = &config.public_dir {
+        tracing::info!("Serving the website from {dir}");
+        app = app.fallback_service(ServeDir::new(dir).append_index_html_on_directories(true));
+    }
+    let app = app
         .layer(DefaultBodyLimit::max(MAX_AUDIO_BYTES + 1024 * 1024))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -95,6 +99,6 @@ async fn main() -> anyhow::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     tracing::info!("Intelligence API listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }

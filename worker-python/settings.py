@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -7,9 +6,6 @@ load_dotenv()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/voiceclone")
-
-# Private storage shared with the Rust API (same directory / Docker volume).
-STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "../backend-rust/private_storage")).resolve()
 
 # Sarvam AI voice cloning (hosted). Get a key at https://dashboard.sarvam.ai
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()

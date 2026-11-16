@@ -1,14 +1,15 @@
 # Intelligence Designed To Evolve
 
-Consent-verified voice cloning and text-to-speech, spoken by the Sarvam AI voice cloning API. No GPU needed;
-no usage limits. A user can only clone their **own** voice. The server issues a random phrase, the user reads it
-aloud, and the API refuses to create a clone until Whisper's transcript of that recording matches the phrase.
+Consent-verified voice cloning and text-to-speech on Sarvam AI's APIs. No GPU needed. A user can only clone their
+**own** voice: the server issues a random phrase, the user reads it aloud, and the API refuses to create a clone until
+Sarvam's transcript of that recording matches the phrase. That same recording is the sample the voice is cloned
+from, so the voice that is cloned is the voice that consented. Each consent creates one voice.
 
 - **Voice engine:** [Sarvam AI voice cloning](https://docs.sarvam.ai/api-reference/voice-cloning/clone) (hosted, needs a `SARVAM_API_KEY`, billed per character). Zero-shot cloning from a 6–15 s reference clip. English (Indian) plus Hindi, Bengali, Tamil, Telugu, Kannada, Malayalam, Marathi, Gujarati, Punjabi, Odia and Assamese; cross-lingual, so one voice can speak any of them.
 - **Rust (Axum) API:** auth, consent, uploads, ownership checks, audit log
 - **Python worker:** processes jobs from Redis and calls the Sarvam API
-- **Whisper speech pipeline** (faster-whisper): verifies spoken consent, turns audio into script text
-- **Static dashboard:** HTML/CSS/vanilla JS, two tabs: **Voices** (record or upload a sample → read the consent phrase → name it) and **Speak** (pick a voice, type or load a script, generate, play, download, history)
+- **Speech-to-text:** [Sarvam AI](https://docs.sarvam.ai/api-reference/speech-to-text/transcribe), called by the Rust API: verifies spoken consent, turns audio into script text (audio is cut into 25 s pieces with ffmpeg)
+- **Static dashboard:** HTML/CSS/vanilla JS, two tabs: **Voices** (read the consent phrase aloud → name it) and **Speak** (pick a voice, type or load a script, generate, play, download, history)
 
 ---
 
@@ -18,17 +19,17 @@ aloud, and the API refuses to create a clone until Whisper's transcript of that 
  Browser  http://localhost:5500  (index.html + frontend/dashboard.html)
     │  JWT (Authorization: Bearer), multipart audio uploads
     ▼
- Rust API  :8080  ──────────────►  speech_pipeline :8000  (Whisper, CPU)
+ Rust API  :8080  ──────────────►  Sarvam AI  POST https://api.sarvam.ai/speech-to-text
     │                                consent check: transcript vs phrase, word match ≥ 75%
     │                                audio → script text (/api/transcribe)
     ├──► PostgreSQL   users, consents, voice_samples, voice_clones, speech_jobs, generated_audio, audit_logs
     ├──► Redis        job queues: voice_clone_jobs · speech_jobs · delete_voice_jobs (JSON)
     │                 engine_health (worker heartbeat, every 30 s)
-    └──► private_storage/   samples/ consents/ references/ generated/   (shared with the worker)
+                      audio in the blobs table: consents/ references/ generated/ (shared with the worker)
                    │
                    ▼
  Python worker ──► Sarvam AI  POST https://api.sarvam.ai/voices/clone
-    clone:  sample → mono 24 kHz WAV, silence trimmed, ≤ 15 s → references/<voice>.wav
+    clone:  consent recording → mono 24 kHz WAV, silence trimmed, ≤ 15 s → references/<voice>.wav
     speech: text split into ≤ 900-char chunks → each sent with the reference clip → joined with short pauses
             → speed (pitch-preserving), loudness normalized, volume → MP3 → generated/<job>.mp3
 ```
@@ -40,7 +41,8 @@ same format and level.
 
 1. `POST /api/consents`: the server generates a phrase with three random code words.
 2. The user records it; `POST /api/consents/:id/verify` transcribes it and verifies it on a match of 75% or more. Each phrase allows 5 attempts.
-3. `POST /api/voice-samples` stores 6 s–5 min of speech. `POST /api/voice-clones` (requires your verified consent) queues the clone.
+3. `POST /api/voice-clones` with the verified consent queues the clone. The consent recording is the voice sample, and
+   its transcript is sent to Sarvam as `ref_text`. The consent is marked used, so it cannot create a second voice.
 4. `POST /api/speech/generate` queues speech; the dashboard polls `/api/speech/jobs/:id` and plays the owner-only MP3.
 
 ### Model
@@ -72,20 +74,36 @@ docker compose up --build
 |---|---|
 | http://localhost:5500/frontend/dashboard.html | Voice Studio (create an account, then clone) |
 | http://localhost:5500 | Landing page |
-| http://localhost:8080/api/health | Health of DB, Redis, Whisper and the voice worker |
+| http://localhost:8080/api/health | Health of DB, Redis, speech-to-text config and the voice worker |
 
-The first start downloads Whisper (used for the consent check). The voice worker needs no download.
+Nothing large is downloaded: speech-to-text and voice cloning both run on Sarvam.
 
-## Hosted dashboard (Vercel)
+## Public deployment (free: Render + Neon)
 
-The web pages are also published at **https://voice-cloning-studio-beta.vercel.app**
-(dashboard: `/frontend/dashboard.html`). Only the static files are on Vercel (`.vercelignore`); the API,
-voice worker and Whisper still run on **your** machine through Docker. The hosted page calls `http://localhost:8080`,
-so it works only in a browser on the computer running the stack.
+`Dockerfile` at the repo root builds **one container** with the API, the voice worker, Redis (job queue only) and
+the website. Audio is stored in Postgres, so the host needs no disk. `render.yaml` describes it for Render.
 
-- `ALLOWED_ORIGINS` in `.env` must include the Vercel URL (it does in `.env.example`).
-- Chrome may ask to allow access to devices on your local network. Click **Allow**.
-- Other people opening the link see the pages but cannot use them unless they run the stack themselves.
+1. Create a free Postgres database at https://neon.tech and copy its connection string.
+2. On https://render.com create a **Web Service** from this repo (Docker, Free plan), or a Blueprint from `render.yaml`.
+3. Set `DATABASE_URL` (the Neon string), `SARVAM_API_KEY` and `JWT_SECRET` (`openssl rand -hex 32`).
+4. Open `https://<service>.onrender.com`: the landing page, with the dashboard at `/frontend/dashboard.html`.
+
+Free Render services sleep after 15 minutes without traffic; the first request after that takes ~30 s.
+The static copy on Vercel (https://voice-cloning-studio-beta.vercel.app) calls the public API set in
+`frontend/config.js` (`PUBLIC_API_URL`); its origin must be in `ALLOWED_ORIGINS`.
+
+### Usage limits
+
+Every voice, clip and transcription spends Sarvam credits, so each account has limits (environment variables,
+0 = unlimited):
+
+| Variable | Default | What |
+|---|---|---|
+| `MAX_VOICES_PER_USER` | 3 | Active voices per account |
+| `DAILY_SPEECH_CHARS` | 2000 | Characters of speech per 24 h |
+| `DAILY_CONSENTS` | 10 | Consent phrases per 24 h |
+| `DAILY_TRANSCRIBE_SECONDS` | 600 | Seconds of audio → script per 24 h |
+| `AUTH_ATTEMPTS_PER_HOUR` | 20 | Sign-in and sign-up attempts per IP address |
 
 ## Local development (without Docker)
 
@@ -95,19 +113,10 @@ Needs Rust 1.89+, Python 3.11, PostgreSQL 15+, Redis 7+ and `ffmpeg`.
 createdb voiceclone
 ```
 
-Speech pipeline (port 8000):
-
-```bash
-cd speech_pipeline && python -m venv .venv && . .venv/bin/activate
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements.txt
-uvicorn app.main:app --port 8000
-```
-
 Rust API (port 8080). Migrations run automatically:
 
 ```bash
-cd backend-rust && cp .env.example .env    # set JWT_SECRET
+cd backend-rust && cp .env.example .env    # set JWT_SECRET and SARVAM_API_KEY
 cargo run
 ```
 
@@ -131,10 +140,6 @@ python -m http.server 5500
 cd backend-rust && cargo test
 ```
 
-```bash
-cd speech_pipeline && pytest
-```
-
 Check the voice engine configuration by hand (prints status and any problem):
 
 ```bash
@@ -151,15 +156,16 @@ cd worker-python && python health.py
 | "Engine error: SARVAM_API_KEY is not set" | No key in `.env` | Add the key and restart the worker |
 | "Sarvam rejected the API key" / "quota exceeded" | Invalid key or no credits | Check the key and credits at https://dashboard.sarvam.ai |
 | Words in the wrong language or accent | Language auto-detection guessed wrong | Set `SARVAM_LANGUAGE` (e.g. `en-IN`, `hi-IN`) |
-| "Only X s of speech was found" | Sample is mostly silence or too short | Record 10–30 s of clear speech |
-| Consent "speech recognition unavailable" | `speech-pipeline` is down or downloading Whisper | `docker compose logs speech-pipeline` |
+| "Only X s of speech was found" | The recording is mostly silence | Read the whole phrase clearly, close to the mic |
+| Consent "speech recognition is not configured" | `SARVAM_API_KEY` missing for `backend-rust` | Set it in `.env` and restart |
+| "This consent was already used" | Each consent creates one voice | Record a new phrase |
 | "Cannot reach the API" | Page opened as `file://` or from another origin | Open http://localhost:5500 |
 | Microphone does not work | Browsers allow the mic only on localhost or HTTPS | Use localhost, or HTTPS when deployed |
 
 ## Scripts from files or audio
 
 In the **Speak** tab, **Load script or audio** fills the script box from `.txt`, `.md`, `.srt` or `.vtt`.
-Audio (mp3, m4a, wav, webm, ogg) is transcribed with Whisper, so an existing recording can be re-spoken in a cloned voice.
+Audio (mp3, m4a, wav, webm, ogg) is transcribed with Sarvam (up to 15 min), so an existing recording can be re-spoken in a cloned voice.
 
 ---
 
@@ -167,15 +173,14 @@ Audio (mp3, m4a, wav, webm, ogg) is transcribed with Whisper, so an existing rec
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/health` | DB, Redis, Whisper and worker status |
+| GET | `/api/health` | DB, Redis, speech-to-text config and worker status |
 | GET | `/api/engine` | `{status: loading/ready/error/offline, model, device, problem}` |
 | POST | `/api/auth/register` · `/api/auth/login` | `{email, password}` → `{token, user}` (JWT, 24 h) |
 | POST | `/api/auth/logout` · GET `/api/auth/me` | |
 | POST | `/api/consents` | Issues a consent phrase |
 | POST | `/api/consents/:id/verify` | multipart `audio` → `{verified, transcript, match_score, threshold, attempts_remaining}` |
 | GET | `/api/consents` | |
-| POST / GET | `/api/voice-samples` | multipart `audio` (mp3/m4a/wav/webm/ogg, ≤ 20 MB) + `duration` |
-| POST | `/api/voice-clones` | `{consent_id, sample_id, display_name}` |
+| POST | `/api/voice-clones` | `{consent_id, display_name}`: clones the verified consent recording (one voice per consent) |
 | GET | `/api/voice-clones` · `/api/voice-clones/:id` | |
 | DELETE | `/api/voice-clones/:id` | Deletes the voice and its reference clip |
 | POST | `/api/speech/generate` | `{voice_clone_id, text, speed?, volume?}` → job |
@@ -194,18 +199,17 @@ Audio (mp3, m4a, wav, webm, ogg) is transcribed with Whisper, so an existing rec
 - Audit log entries cover register, login, failed logins, consent issue/verify/fail, uploads, queueing and deletes.
 - Reference clips and text are sent to Sarvam AI to generate speech. Do not use it for audio you may not share with them.
 
-**Not done yet:** speaker verification (checking that the consent voice is the same person as the sample voice),
-rate limiting, and token revocation on logout.
+**Not done yet:** token revocation on logout, email verification, and deleting a voice's consent recording.
 
 ## Repository layout
 
 ```
 backend-rust/      Axum API (src/routes/*, consent_check.rs, stt.rs, migrations/)
 worker-python/     main.py (queue loop + heartbeat), tts.py (Sarvam API client), jobs.py, audio_utils.py, health.py
-speech_pipeline/   Whisper service (POST /api/v1/transcribe)
 frontend/          Dashboard (dashboard.html/.css/.js, config.js)
 index.html, styles.css   Landing page
-docker-compose.yml          Full stack
+docker-compose.yml          Full stack for local development (one container per service)
+Dockerfile, render.yaml     One-container build for free hosting (Render)
 ```
 
 ## License

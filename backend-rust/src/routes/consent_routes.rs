@@ -17,6 +17,9 @@ use crate::{
     storage, stt,
 };
 
+/// Reading a phrase takes ~10 s; the limit only rejects runaway recordings.
+const MAX_CONSENT_SECONDS: f64 = 60.0;
+
 #[derive(Debug, Default, Deserialize)]
 pub struct CreateConsentRequest {
     pub consent_version: Option<String>,
@@ -28,6 +31,7 @@ pub async fn create_consent(
     State(state): State<AppState>,
     body: Option<Json<CreateConsentRequest>>,
 ) -> ApiResult<Consent> {
+    crate::limits::check_consents(&state, auth.user_id).await?;
     let version = body
         .and_then(|Json(b)| b.consent_version)
         .filter(|v| !v.trim().is_empty() && v.len() <= 32)
@@ -49,8 +53,9 @@ pub async fn create_consent(
 }
 
 
-/// Step 2: the user uploads a recording of the phrase. The speech_pipeline (Whisper)
-/// transcribes it and the consent is verified only if the transcript matches the phrase.
+/// Step 2: the user records the phrase. Sarvam speech-to-text transcribes it and the consent
+/// is verified only if the transcript matches the phrase. The same recording later becomes
+/// the voice sample, so the voice that is cloned is the voice that gave consent.
 pub async fn verify_consent(
     auth: AuthUser,
     Path(consent_id): Path<Uuid>,
@@ -77,6 +82,9 @@ pub async fn verify_consent(
             consent,
         }));
     }
+    if consent.used_at.is_some() {
+        return Err(ApiError::bad_request("This consent was already used to create a voice. Request a new phrase."));
+    }
     if consent.attempts >= max {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -89,12 +97,11 @@ pub async fn verify_consent(
         .ok_or_else(|| ApiError::bad_request("Unsupported audio format (use webm, wav, mp3, m4a or ogg)"))?;
 
     // Transcribe before counting the attempt, so an outage does not burn attempts.
-    let transcript =
-        stt::transcribe(&state, upload.bytes.clone(), ext, mime, std::time::Duration::from_secs(120)).await?;
+    let (transcript, _) = stt::transcribe(&state, &upload.bytes, ext, Some("en-IN"), MAX_CONSENT_SECONDS).await?;
 
     let attempt = consent.attempts + 1;
     let key = format!("consents/{}_{}.{}", consent.id, attempt, ext);
-    storage::save(&state.config.storage_dir, &key, &upload.bytes).await?;
+    storage::save(&state.db, auth.user_id, &key, mime, &upload.bytes).await?;
 
     let score = match_score(&consent.spoken_phrase, &transcript);
     let threshold = state.config.consent_match_threshold;

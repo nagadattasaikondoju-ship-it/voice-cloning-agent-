@@ -61,19 +61,13 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
         Ok(mut con) => redis::cmd("PING").query_async::<String>(&mut con).await.is_ok(),
         Err(_) => false,
     };
-    let stt_ok = state
-        .http
-        .get(format!("{}/api/v1/health", state.config.speech_pipeline_url))
-        .send()
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
+    let stt_ok = !state.config.sarvam_api_key.is_empty();
     let engine = engine_status(&state).await;
     Json(json!({
         "status": if db_ok && redis_ok && stt_ok && engine.ok { "ok" } else { "degraded" },
         "database": db_ok,
         "redis": redis_ok,
-        "speech_pipeline": stt_ok,
+        "speech_to_text": stt_ok,
         "worker": engine.status,
     }))
 }
